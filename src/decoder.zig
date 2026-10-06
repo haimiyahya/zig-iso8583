@@ -1,8 +1,48 @@
-//! ISO 8583 message decoder (parser).
+//! # ISO 8583 Message Decoder (Parser)
 //!
-//! Zero-copy design: decoded fields are slices into the source buffer.
-//! Uses ArenaAllocator for field store allocation only.
-//! SIMD-accelerated bitmap scanning and validation.
+//! Zero-copy decode pipeline: parsed fields are `[]const u8` slices pointing
+//! directly into the caller's source buffer — no field data is copied.
+//!
+//! ## Decode Pipeline
+//!
+//! ```text
+//! ┌──────┬──────────┬─────────────────────────────────────┐
+//! │ MTI  │  Bitmap  │  DE2 │ DE3 │ DE4 │ ...  │ DE128     │
+//! └──────┴──────────┴─────────────────────────────────────┘
+//!    │         │                  │
+//!    ▼         ▼                  ▼
+//!  Mti      Bitmap    FieldStore (slices into buf)
+//! ```
+//!
+//! 1. **MTI** — parsed per `spec.mti_encoding` (ASCII or BCD)
+//! 2. **Bitmap** — parsed per `spec.bitmap_encoding`; auto-detects secondary
+//! 3. **Fields** — iterated in bitmap order; each is length-parsed per its
+//!    `LengthType`, validated against the spec, and stored as a slice
+//!
+//! ## Usage
+//!
+//! ```zig
+//! var msg = try iso8583.Message.init(allocator, &iso8583.SpecV1987);
+//! defer msg.deinit();               // frees arena — one call
+//! try msg.decode(wire_bytes);
+//!
+//! const pan = msg.getField(2).?;    // zero-copy []const u8
+//! const amount = msg.getFieldInt(4); // pre-parsed ?u64
+//! ```
+//!
+//! ## Memory Management
+//!
+//! Each `Message` owns an `ArenaAllocator`. All allocations during decode
+//! (currently none for field data — zero copy) come from this arena and are
+//! released in one `deinit()` call. Use `reset()` to reuse the message for
+//! another decode without returning memory to the backing allocator —
+//! ideal for server request loops.
+//!
+//! ## Lifetime Contract
+//!
+//! Decoded field slices reference the buffer passed to `decode()`. The
+//! caller must keep that buffer alive and unmodified for as long as the
+//! `Message` (or any field view from it) is in use.
 
 const std = @import("std");
 const spec_mod = @import("spec.zig");
@@ -21,32 +61,65 @@ pub const LengthType = encoding.LengthType;
 
 // ─── Error Set ─────────────────────────────────────────────────────────────
 
+/// Errors that can occur during message decoding.
 pub const DecodeError = error{
+    /// MTI contains a non-digit byte.
     InvalidMti,
+    /// Bitmap region is malformed.
     InvalidBitmap,
+    /// Field data fails encoding rules (e.g., non-digit in numeric field).
     InvalidFieldEncoding,
+    /// Field length contradicts spec (fixed-length mismatch).
     InvalidFieldLength,
+    /// Variable-length field exceeds its spec max_len.
     FieldTooLong,
+    /// Present in bitmap but not defined in the spec (skipped, reserved).
     FieldNotInSpec,
+    /// BCD data contains an invalid nibble (> 9).
     InvalidBcdDigit,
+    /// Buffer ends before the message is complete.
     BufferTooShort,
+    /// Field data extends past end of buffer.
     UnexpectedEndOfMessage,
+    /// Backing allocator failed.
     OutOfMemory,
 };
 
 // ─── Decoded Message ───────────────────────────────────────────────────────
 
-/// A decoded ISO 8583 message. Fields are zero-copy views into the source buffer.
+/// A decoded ISO 8583 message.
+///
+/// Fields are zero-copy views into the source buffer passed to `decode()`.
+/// Owns an arena for internal allocations; `deinit()` releases everything.
+///
+/// ```zig
+/// var msg = try Message.init(allocator, &iso8583.SpecV1987);
+/// defer msg.deinit();
+/// try msg.decode(wire_bytes);
+///
+/// msg.mti.class == .authorization;
+/// msg.getField(2) != null;          // PAN present
+/// msg.getFieldInt(4) == 1000;       // amount pre-parsed
+/// ```
 pub const Message = struct {
+    /// Arena allocator owning this message's heap memory.
     arena: std.heap.ArenaAllocator,
+    /// Parsed Message Type Identifier.
     mti: Mti,
+    /// Parsed presence bitmap (8 or 16 bytes).
     bitmap: Bitmap,
+    /// Zero-copy field storage.
     field_store: FieldStore,
+    /// The comptime spec this message conforms to.
     spec: *const Spec,
 
     const Self = @This();
 
     /// Initialize a message with the given backing allocator and spec.
+    /// Initialize a message with the given backing allocator and spec.
+    ///
+    /// The spec must be a comptime constant (e.g., `&iso8583.SpecV1987`).
+    /// Returns error.OutOfMemory if the arena cannot be created.
     pub fn init(backing: std.mem.Allocator, s: *const Spec) !Self {
         return .{
             .arena = std.heap.ArenaAllocator.init(backing),
@@ -58,19 +131,31 @@ pub const Message = struct {
     }
 
     /// Deallocate all memory used by this message.
+    /// Deallocate all memory used by this message. Required after use.
     pub fn deinit(self: *Self) void {
         self.arena.deinit();
     }
 
     /// Reset the message for reuse (keeps arena memory, clears fields).
+    /// Reset the message for reuse (keeps arena memory, clears fields).
+    ///
+    /// Cheaper than deinit+init for server loops processing many messages:
+    /// the arena's capacity is retained and reused.
     pub fn reset(self: *Self) void {
         self.field_store = FieldStore.init();
         self.bitmap = Bitmap.init();
         _ = self.arena.reset(.retain_capacity);
     }
 
-    /// Decode a raw byte slice into this message.
-    /// All field data remains as slices into `buf` — zero copy.
+    /// Decode a raw wire-format byte slice into this message.
+    ///
+    /// Parses MTI → bitmap → fields in order. All field data remains as
+    /// slices into `buf` — nothing is copied (zero-copy). The caller must
+    /// keep `buf` alive and unmodified while this message is in use.
+    ///
+    /// ## Errors
+    /// See `DecodeError`. The message may be partially populated if an
+    /// error occurs mid-decode; call `reset()` before reusing it.
     pub fn decode(self: *Self, buf: []const u8) !void {
         var offset: usize = 0;
 
@@ -224,12 +309,22 @@ pub const Message = struct {
 
     // ─── Field Access ──────────────────────────────────────────────────────
 
-    /// Get a field's raw data (zero-copy). Returns null if not present.
+    /// Get a field's raw data (zero-copy view). Returns null if not present.
+    ///
+    /// ```zig
+    /// if (msg.getField(2)) |pan| {
+    ///     std.log.info("PAN: {s}", .{pan});  // "4111111111111111"
+    /// }
+    /// ```
     pub fn getField(self: Self, field_id: usize) ?[]const u8 {
         return self.field_store.get(field_id);
     }
 
-    /// Get a field's pre-parsed integer value. Returns null if not present or not numeric.
+    /// Get a field's pre-parsed integer value.
+    ///
+    /// Populated during decode for `ascii_numeric` fields up to 19 digits.
+    /// Returns null for absent fields, non-numeric fields, or values that
+    /// overflow u64.
     pub fn getFieldInt(self: Self, field_id: usize) ?u64 {
         return self.field_store.getInt(field_id);
     }
@@ -244,7 +339,14 @@ pub const Message = struct {
         return self.field_store.count();
     }
 
-    /// Iterate over present field IDs.
+    /// Iterate present field IDs in ascending order.
+    ///
+    /// ```zig
+    /// var iter = msg.fieldIterator();
+    /// while (iter.next()) |field_id| {
+    ///     std.log.info("DE{}: {s}", .{ field_id, msg.getField(field_id).? });
+    /// }
+    /// ```
     pub fn fieldIterator(self: *const Self) FieldStore.Iterator {
         return self.field_store.iterator();
     }

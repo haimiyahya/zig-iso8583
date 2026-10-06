@@ -1,7 +1,23 @@
-//! Field type system for ISO 8583 data elements.
+//! # Field Type System for ISO 8583 Data Elements
 //!
-//! Provides the field descriptor, field view (zero-copy decoded field),
-//! and comptime field resolution utilities.
+//! Provides the field descriptor (comptime), field view (zero-copy runtime),
+//! and field store (direct-index storage with no hash maps).
+//!
+//! ## FieldDescriptor
+//!
+//! Describes a single data element's format. Created at comptime via
+//! `field()` helper and used to build `Spec` definitions.
+//!
+//! ## FieldView
+//!
+//! A decoded field: a typed view into the source message buffer.
+//! `raw` points into the original buffer — zero copy.
+//!
+//! ## FieldStore
+//!
+//! Stores decoded field data using a flat array indexed by (field_id - 2).
+//! Uses a `std.StaticBitSet` for presence tracking and direct-index access
+//! for O(1) field lookup — no hash maps.
 
 const std = @import("std");
 const encoding = @import("encoding.zig");
@@ -13,15 +29,33 @@ pub const LengthType = encoding.LengthType;
 // ─── Field Descriptor (comptime) ────────────────────────────────────────────
 
 /// Describes a single data element's format. Used at comptime to build specs.
+///
+/// Created via the `field()` helper. `max_len` is derived automatically for
+/// fixed-length fields; for variable-length fields it comes from `opts`.
 pub const FieldDescriptor = struct {
+    /// Field ID (2–128).
     id: u8,
+    /// How the length is determined on the wire.
     length_type: LengthType,
+    /// How the data is encoded on the wire.
     encoding: FieldEncoding,
-    max_len: usize = 0, // For variable-length fields, the maximum allowed length
+    /// Maximum data length in bytes. Auto-set to the fixed length for
+    /// fixed-length fields; from opts.max_len for variable-length fields.
+    max_len: usize = 0,
+    /// True if this field contains nested sub-fields (e.g., DE48, DE62).
     has_subfields: bool = false,
 };
 
 /// Create a field descriptor with concise syntax.
+///
+/// ```zig
+/// field(2, .llvar, .ascii_numeric, .{ .max_len = 19 })   // PAN
+/// field(3, .fixed_6, .ascii_numeric, .{})                // processing code
+/// field(48, .lllvar, .ascii_alpha, .{ .max_len = 999, .has_subfields = true })
+/// ```
+///
+/// For fixed-length fields, max_len is derived from the length type and
+/// opts.max_len is ignored.
 pub fn field(
     comptime id: comptime_int,
     comptime lt: LengthType,
@@ -43,19 +77,22 @@ pub fn field(
 /// A decoded field: a typed view into the source message buffer.
 /// `raw` points into the original buffer — no copy.
 pub const FieldView = struct {
+    /// Field ID (2–128).
     field_id: u8,
+    /// Wire encoding of this field.
     enc: FieldEncoding,
-    /// Byte slice into the original message buffer (zero-copy)
+    /// Byte slice into the original message buffer (zero-copy).
     raw: []const u8,
-    /// For numeric fields: pre-parsed value if it fits in u64
+    /// For numeric fields: pre-parsed value if it fits in u64.
     int_val: ?u64 = null,
 };
 
 // ─── Field Store ───────────────────────────────────────────────────────────
 
-/// Stores decoded field data. Uses a flat array indexed by (field_id - 2)
-/// since field IDs start at 2 (field 1 is the bitmap indicator).
-/// For sparse specs, we use a presence bitset + entry array.
+/// Stores decoded field data with O(1) direct-index access.
+///
+/// A flat array indexed by (field_id - 2) plus a presence bitset — no hash
+/// maps. Field IDs start at 2 (field 1 is the bitmap indicator).
 pub const FieldStore = struct {
     /// Bitset tracking which fields (2–128) have been set.
     present: std.StaticBitSet(bitmap.MAX_FIELDS),

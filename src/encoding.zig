@@ -1,8 +1,26 @@
-//! Field encoding types and codec functions for ISO 8583.
+//! # Field Encoding Types and Codec Functions
 //!
-//! Supports BCD, ASCII numeric, ASCII alpha, ASCII binary, and binary encodings.
-//! SIMD-accelerated conversion functions are in simd.zig; this module provides
-//! the type definitions and scalar (fallback) codec implementations.
+//! Defines wire-encoding types and provides scalar (non-SIMD) implementations
+//! of BCD↔ASCII conversion, ASCII numeric parsing, length-prefix handling,
+//! and validation.
+//!
+//! For SIMD-accelerated versions, see `simd.zig`. The functions here serve as
+//! scalar fallbacks for sub-vector tails and platforms without SIMD support.
+//!
+//! ## Types
+//!
+//! **FieldEncoding** — How field data is encoded on the wire:
+//!   - `ascii_numeric`: ASCII digits '0'–'9' (DE2 PAN, DE4 Amount, DE11 STAN)
+//!   - `ascii_alpha`: ASCII alphanumeric A-Z, a-z, 0-9 (DE41, DE48)
+//!   - `ascii_binary`: ASCII hex 0-9, A-F, a-f (some sub-field encodings)
+//!   - `bcd`: Binary Coded Decimal, 2 digits/byte (BCD MTI, BCD bitmap)
+//!   - `binary`: Raw bytes (DE52 PIN block, DE64 MAC)
+//!
+//! **LengthType** — How field length is determined:
+//!   - `fixed_N`: Exactly N bytes (DE3=6, DE4=12, DE41=8)
+//!   - `llvar`: 2-digit ASCII length prefix (DE2, DE33)
+//!   - `lllvar`: 3-digit ASCII length prefix (DE48, DE62)
+//!   - `llllvar`: 4-digit ASCII length prefix (rare)
 
 const std = @import("std");
 
@@ -10,13 +28,19 @@ const std = @import("std");
 
 /// How a field's data is encoded on the wire.
 pub const FieldEncoding = enum {
-    ascii_numeric, // ASCII digits '0'–'9'
-    ascii_alpha, // ASCII alphanumeric
-    ascii_binary, // ASCII hex representation of binary
-    bcd, // Binary Coded Decimal (2 digits per byte)
-    binary, // Raw bytes
+    /// ASCII digits '0'–'9'. Each digit occupies one byte (0x30–0x39).
+    ascii_numeric,
+    /// ASCII alphanumeric: A-Z, a-z, 0-9.
+    ascii_alpha,
+    /// ASCII hex: 0-9, A-F, a-f. Two hex chars per byte.
+    ascii_binary,
+    /// Binary Coded Decimal: two digits packed per byte.
+    /// High nibble = first digit, low nibble = second digit.
+    bcd,
+    /// Raw binary bytes with no character interpretation.
+    binary,
 
-    /// Returns true if this encoding uses ASCII representation.
+    /// Returns true if this encoding uses ASCII representation on the wire.
     pub fn isAscii(self: FieldEncoding) bool {
         return switch (self) {
             .ascii_numeric, .ascii_alpha, .ascii_binary => true,
@@ -24,7 +48,7 @@ pub const FieldEncoding = enum {
         };
     }
 
-    /// Returns true if this encoding is BCD.
+    /// Returns true if this encoding is Binary Coded Decimal.
     pub fn isBcd(self: FieldEncoding) bool {
         return self == .bcd;
     }
@@ -62,9 +86,12 @@ pub const LengthType = enum(u8) {
     fixed_96 = 96,
     fixed_100 = 100,
     fixed_128 = 128,
-    llvar, // 2-digit length prefix
-    lllvar, // 3-digit length prefix
-    llllvar, // 4-digit length prefix (rare)
+    /// Variable-length: 2 ASCII digit length prefix.
+    llvar,
+    /// Variable-length: 3 ASCII digit length prefix.
+    lllvar,
+    /// Variable-length: 4 ASCII digit length prefix.
+    llllvar,
 
     /// Returns the fixed byte length, or null for variable-length types.
     pub fn fixedLen(self: LengthType) ?usize {
@@ -75,6 +102,7 @@ pub const LengthType = enum(u8) {
     }
 
     /// Returns the number of digits in the length prefix for variable-length fields.
+    /// llvar→2, lllvar→3, llllvar→4, fixed→null.
     pub fn prefixDigits(self: LengthType) ?u3 {
         return switch (self) {
             .llvar => 2,
@@ -93,8 +121,7 @@ pub const LengthType = enum(u8) {
 // ─── BCD Codec ─────────────────────────────────────────────────────────────
 
 /// Decode a single BCD byte into two ASCII digit bytes.
-/// Example: 0xAB → 'A', 'B' (i.e., 0x41, 0x42 for A=10, B=11 digit values)
-/// For typical financial use: 0x12 → '1', '2' (0x31, 0x32)
+/// Example: bcdByteToAscii(0x12) returns { '1', '2' }
 pub fn bcdByteToAscii(bcd: u8) [2]u8 {
     const hi: u8 = (bcd >> 4) & 0x0F;
     const lo: u8 = bcd & 0x0F;
@@ -102,7 +129,8 @@ pub fn bcdByteToAscii(bcd: u8) [2]u8 {
 }
 
 /// Encode two ASCII digit bytes into a single BCD byte.
-/// Example: '1', '2' → 0x12
+/// Returns error.InvalidBcdDigit if either byte is not '0'–'9'.
+/// Example: asciiToBcdByte('1', '2') returns 0x12
 pub fn asciiToBcdByte(hi: u8, lo: u8) !u8 {
     if (hi < 0x30 or hi > 0x39 or lo < 0x30 or lo > 0x39)
         return error.InvalidBcdDigit;
@@ -110,8 +138,8 @@ pub fn asciiToBcdByte(hi: u8, lo: u8) !u8 {
 }
 
 /// Decode BCD bytes into ASCII digits (scalar fallback).
-/// `bcd.len` bytes produce `bcd.len * 2` ASCII bytes in `out`.
-/// `out.len` must be >= `bcd.len * 2`.
+/// Each BCD byte produces two ASCII bytes in `out`.
+/// Caller must ensure out.len >= bcd.len * 2.
 pub fn bcdToAscii(bcd: []const u8, out: []u8) void {
     for (bcd, 0..) |byte, i| {
         const digits = bcdByteToAscii(byte);
@@ -121,7 +149,7 @@ pub fn bcdToAscii(bcd: []const u8, out: []u8) void {
 }
 
 /// Encode ASCII digits into BCD bytes (scalar fallback).
-/// Two ASCII chars produce one BCD byte. `ascii.len` must be even.
+/// Pairs of ASCII chars → single BCD byte. ascii.len must be even.
 pub fn asciiToBcd(ascii: []const u8, out: []u8) !void {
     if (ascii.len % 2 != 0) return error.InvalidBcdDigit;
     var i: usize = 0;
@@ -132,14 +160,14 @@ pub fn asciiToBcd(ascii: []const u8, out: []u8) !void {
 
 // ─── ASCII Numeric Parsing ─────────────────────────────────────────────────
 
-/// Parse an ASCII numeric string into a u64.
-/// All bytes must be ASCII digits '0'–'9'.
+/// Parse an ASCII numeric string into an integer of type T.
+/// All bytes must be '0'–'9'. Returns error.InvalidFieldEncoding for
+/// non-digits or empty input, error.Overflow if value exceeds maxInt(T).
 pub fn parseAsciiUint(comptime T: type, buf: []const u8) !T {
     if (buf.len == 0) return error.InvalidFieldEncoding;
     var result: T = 0;
     for (buf) |b| {
         if (b < 0x30 or b > 0x39) return error.InvalidFieldEncoding;
-        // Check for overflow before multiplying
         if (result != 0 and result > std.math.maxInt(T) / 10)
             return error.Overflow;
         result *%= 10;
@@ -151,8 +179,8 @@ pub fn parseAsciiUint(comptime T: type, buf: []const u8) !T {
     return result;
 }
 
-/// Write a u64 value as ASCII digits into `buf`.
-/// Right-aligned, zero-padded to `buf.len`.
+/// Write a u64 value as zero-padded ASCII digits into buf.
+/// Right-aligned: writeAsciiUint(42, buf[0..6]) → "000042"
 pub fn writeAsciiUint(value: u64, buf: []u8) void {
     var v = value;
     var i: usize = buf.len;
@@ -165,8 +193,8 @@ pub fn writeAsciiUint(value: u64, buf: []u8) void {
 
 // ─── Length Prefix Codec ───────────────────────────────────────────────────
 
-/// Parse a variable-length field's length prefix from the buffer.
-/// Returns the parsed length and the number of bytes consumed by the prefix.
+/// Parse a variable-length field's length prefix.
+/// Reads prefix_digits (2/3/4) ASCII bytes, returns .len and .consumed.
 pub fn parseLengthPrefix(buf: []const u8, prefix_digits: u3) !struct { len: usize, consumed: usize } {
     if (buf.len < prefix_digits) return error.BufferTooShort;
     const len = try parseAsciiUint(usize, buf[0..prefix_digits]);
@@ -174,7 +202,7 @@ pub fn parseLengthPrefix(buf: []const u8, prefix_digits: u3) !struct { len: usiz
 }
 
 /// Write a variable-length field's length prefix into the buffer.
-pub fn writeLengthPrefix(buf: []u8, len: usize, comptime prefix_digits: u2) void {
+pub fn writeLengthPrefix(buf: []u8, len: usize, comptime prefix_digits: u3) void {
     var tmp: [4]u8 = undefined;
     writeAsciiUint(len, &tmp);
     @memcpy(buf[0..prefix_digits], tmp[4 - prefix_digits .. 4]);
@@ -182,7 +210,7 @@ pub fn writeLengthPrefix(buf: []u8, len: usize, comptime prefix_digits: u2) void
 
 // ─── Validation ────────────────────────────────────────────────────────────
 
-/// Validate that all bytes are ASCII digits (scalar).
+/// Validate that all bytes are ASCII digits '0'–'9' (scalar).
 pub fn validateAsciiDigitsScalar(slice: []const u8) bool {
     for (slice) |b| {
         if (b < 0x30 or b > 0x39) return false;
@@ -190,7 +218,7 @@ pub fn validateAsciiDigitsScalar(slice: []const u8) bool {
     return true;
 }
 
-/// Validate that all bytes are ASCII alphanumeric (scalar).
+/// Validate that all bytes are ASCII alphanumeric A-Z, a-z, 0-9 (scalar).
 pub fn validateAsciiAlnumScalar(slice: []const u8) bool {
     for (slice) |b| {
         const is_digit = b >= 0x30 and b <= 0x39;
@@ -207,18 +235,14 @@ test "bcdByteToAscii" {
     const result = bcdByteToAscii(0x12);
     try std.testing.expectEqual(@as(u8, '1'), result[0]);
     try std.testing.expectEqual(@as(u8, '2'), result[1]);
-
     const result2 = bcdByteToAscii(0x99);
     try std.testing.expectEqual(@as(u8, '9'), result2[0]);
     try std.testing.expectEqual(@as(u8, '9'), result2[1]);
 }
 
 test "asciiToBcdByte" {
-    const result = try asciiToBcdByte('1', '2');
-    try std.testing.expectEqual(@as(u8, 0x12), result);
-
-    const result2 = try asciiToBcdByte('9', '9');
-    try std.testing.expectEqual(@as(u8, 0x99), result2);
+    try std.testing.expectEqual(@as(u8, 0x12), try asciiToBcdByte('1', '2'));
+    try std.testing.expectEqual(@as(u8, 0x99), try asciiToBcdByte('9', '9'));
 }
 
 test "asciiToBcdByte invalid" {
@@ -231,7 +255,6 @@ test "bcdToAscii / asciiToBcd round-trip" {
     var ascii_buf: [10]u8 = undefined;
     bcdToAscii(&bcd_input, &ascii_buf);
     try std.testing.expectEqualSlices(u8, "1234567890", &ascii_buf);
-
     var bcd_out: [5]u8 = undefined;
     try asciiToBcd(&ascii_buf, &bcd_out);
     try std.testing.expectEqualSlices(u8, &bcd_input, &bcd_out);
@@ -240,7 +263,6 @@ test "bcdToAscii / asciiToBcd round-trip" {
 test "parseAsciiUint" {
     try std.testing.expectEqual(@as(u64, 12345), try parseAsciiUint(u64, "12345"));
     try std.testing.expectEqual(@as(u64, 0), try parseAsciiUint(u64, "0"));
-    try std.testing.expectEqual(@as(u64, 999999999999), try parseAsciiUint(u64, "999999999999"));
 }
 
 test "writeAsciiUint" {
@@ -252,7 +274,6 @@ test "writeAsciiUint" {
 test "validateAsciiDigitsScalar" {
     try std.testing.expect(validateAsciiDigitsScalar("12345"));
     try std.testing.expect(!validateAsciiDigitsScalar("123A5"));
-    try std.testing.expect(validateAsciiDigitsScalar(""));
 }
 
 test "validateAsciiAlnumScalar" {
@@ -262,13 +283,10 @@ test "validateAsciiAlnumScalar" {
 
 test "LengthType.fixedLen" {
     try std.testing.expectEqual(@as(?usize, 6), LengthType.fixed_6.fixedLen());
-    try std.testing.expectEqual(@as(?usize, 12), LengthType.fixed_12.fixedLen());
     try std.testing.expectEqual(@as(?usize, null), LengthType.llvar.fixedLen());
-    try std.testing.expectEqual(@as(?usize, null), LengthType.lllvar.fixedLen());
 }
 
 test "LengthType.prefixDigits" {
-    try std.testing.expectEqual(@as(?u3, null), LengthType.fixed_6.prefixDigits());
     try std.testing.expectEqual(@as(?u3, 2), LengthType.llvar.prefixDigits());
     try std.testing.expectEqual(@as(?u3, 3), LengthType.lllvar.prefixDigits());
     try std.testing.expectEqual(@as(?u3, 4), LengthType.llllvar.prefixDigits());

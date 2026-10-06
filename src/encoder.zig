@@ -1,7 +1,39 @@
-//! ISO 8583 message encoder (serializer).
+//! # ISO 8583 Message Encoder (Serializer)
 //!
-//! Builds wire-format bytes from a Message struct.
-//! Uses ArenaAllocator for encode buffer management.
+//! Builds wire-format bytes from a `Message` and writes them to any
+//! `std.io.Writer`.
+//!
+//! ## Encode Pipeline
+//!
+//! ```text
+//! Message ──► encode() ──► writer
+//!              │
+//!              ├─ 1. encodeMti()     — ASCII "0100" or BCD 0x01 0x00
+//!              ├─ 2. encodeBitmap()  — from present fields; auto secondary
+//!              └─ 3. encodeFields()  — length prefixes + data per spec
+//! ```
+//!
+//! ## Usage
+//!
+//! ```zig
+//! var msg = try iso8583.Message.init(allocator, &iso8583.SpecV1987);
+//! defer msg.deinit();
+//!
+//! setMti(&msg, 0, .authorization, .request, .acquirer);
+//! try setField(&msg, 2, "4111111111111111");
+//! try setField(&msg, 4, "000000001000");
+//!
+//! var buf = std.ArrayList(u8).init(allocator);
+//! defer buf.deinit();
+//! try iso8583.encode(&msg, buf.writer());
+//! // buf.items is now the wire-format message
+//! ```
+//!
+//! ## Field Ordering
+//!
+//! Fields are written in ascending field-ID order, matching bitmap order.
+//! Variable-length fields get their ASCII length prefix (2/3/4 digits)
+//! prepended automatically. Fixed-length fields are written as-is.
 
 const std = @import("std");
 const spec_mod = @import("spec.zig");
@@ -21,18 +53,29 @@ pub const LengthType = encoding.LengthType;
 
 // ─── Error Set ─────────────────────────────────────────────────────────────
 
+/// Errors that can occur during encoding or field setting.
 pub const EncodeError = error{
+    /// Field ID is not defined in the message's spec.
     FieldNotInSpec,
+    /// Variable-length data exceeds the spec's max_len.
     FieldTooLong,
+    /// Fixed-length data does not exactly match the spec length.
     FieldNotSet,
+    /// BCD conversion failed on invalid input.
     InvalidBcdDigit,
+    /// Output buffer exhausted.
     BufferTooShort,
+    /// Writer allocation failed.
     OutOfMemory,
 };
 
 // ─── Encoder ───────────────────────────────────────────────────────────────
 
 /// Encode a Message to a writer.
+///
+/// Writes MTI, bitmap, and all present fields in ascending field-ID order.
+/// The writer can be anything accepting `writeAll` (ArrayList writer,
+/// fixedBufferStream, file writer, etc.).
 pub fn encode(msg: *const Message, writer: anytype) !void {
     // 1. Encode MTI
     try encodeMti(msg, writer);
@@ -120,6 +163,11 @@ fn encodeField(writer: anytype, data: []const u8, desc: spec_mod.FieldDescriptor
 // ─── Message Builder Helpers ───────────────────────────────────────────────
 
 /// Set the MTI on a message using structured fields.
+///
+/// ```zig
+/// // Builds MTI "0200": version 0, financial, request, from acquirer
+/// setMti(&msg, 0, .financial, .request, .acquirer);
+/// ```
 pub fn setMti(msg: *Message, version: u4, class: mti_mod.MsgClass, function: mti_mod.MsgFunction, origin: mti_mod.MsgOrigin) void {
     msg.mti = .{
         .version = version,
@@ -129,7 +177,19 @@ pub fn setMti(msg: *Message, version: u4, class: mti_mod.MsgClass, function: mti
     };
 }
 
-/// Set a field's data on the message.
+/// Set a field's data on the message, validating against the spec.
+///
+/// - Variable-length fields: `data.len` must be <= spec max_len.
+/// - Fixed-length fields: `data.len` must exactly equal the spec length.
+///   (BCD fields expect wire bytes: ceil(digits / 2).)
+///
+/// `ascii_numeric` data is additionally pre-parsed into an int (see
+/// `Message.getFieldInt`).
+///
+/// ## Errors
+/// - `error.FieldNotInSpec` — field_id not defined in the spec
+/// - `error.FieldTooLong` — variable-length data exceeds max_len
+/// - `error.InvalidFieldLength` — fixed-length data size mismatch
 pub fn setField(msg: *Message, field_id: usize, data: []const u8) !void {
     if (!msg.spec.hasField(field_id)) return error.FieldNotInSpec;
 

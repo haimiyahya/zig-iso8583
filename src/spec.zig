@@ -1,11 +1,38 @@
-//! Comptime specification engine for ISO 8583 message formats.
+//! # Comptime Specification Engine for ISO 8583
 //!
-//! Provides a DSL to define message specs at comptime. The spec is used to:
+//! Provides a DSL to define message specifications at comptime. The spec is
+//! used to:
 //! - Generate field dispatch tables (no runtime hash maps)
 //! - Validate field IDs and types at comptime
 //! - Specialize decoder/encoder code per spec
 //!
-//! Pre-built specs for ISO 8583:1987, 1993, and 2003 are included.
+//! ## Defining a Custom Spec
+//!
+//! ```zig
+//! const MySpec = Spec.define(.{
+//!     .version = .v1987,
+//!     .mti_encoding = .ascii,       // optional, default .ascii
+//!     .bitmap_encoding = .binary,   // optional, default .binary
+//!     .fields = &.{
+//!         field(2, .llvar, .ascii_numeric, .{ .max_len = 19 }),  // PAN
+//!         field(3, .fixed_6, .ascii_numeric, .{}),               // Processing code
+//!         field(4, .fixed_12, .ascii_numeric, .{}),              // Amount
+//!         field(48, .lllvar, .ascii_alpha, .{ .max_len = 999 }), // Additional data
+//!     },
+//! });
+//! ```
+//!
+//! ## Pre-built Specs
+//!
+//! - `SpecV1987` — ISO 8583:1987 with 50+ common financial fields
+//! - `SpecV1993` — ISO 8583:1993 updated field set
+//! - `SpecV2003` — ISO 8583:2003 with new fields (DE122–DE127)
+//!
+//! ## Field Lookup
+//!
+//! `Spec.lookup(id)` resolves a field ID to its descriptor in O(1) using a
+//! comptime-built lookup table (`field_index: [129]i16`, -1 = not in spec).
+//! No hash maps, no binary search — direct array indexing.
 
 const std = @import("std");
 const encoding = @import("encoding.zig");
@@ -17,9 +44,13 @@ pub const FieldDescriptor = field_mod.FieldDescriptor;
 
 // ─── ISO 8583 Version ──────────────────────────────────────────────────────
 
+/// The ISO 8583 standard version a spec targets.
 pub const Version = enum {
+    /// ISO 8583:1987 — the classic, still most widely used version.
     v1987,
+    /// ISO 8583:1993 — minor updates.
     v1993,
+    /// ISO 8583:2003 — major revision with new data elements.
     v2003,
 };
 
@@ -27,39 +58,68 @@ pub const Version = enum {
 
 /// How the MTI is encoded on the wire.
 pub const MtiEncoding = enum {
-    ascii, // 4 ASCII bytes: "0100"
-    bcd, // 2 BCD bytes: 0x01 0x00
+    /// 4 ASCII bytes: "0100". Human-readable, most common.
+    ascii,
+    /// 2 BCD bytes: 0x01 0x00. Half the wire size.
+    bcd,
 };
 
 /// How the bitmap is encoded on the wire.
 pub const BitmapEncoding = enum {
-    binary, // 8 or 16 raw bytes
-    bcd, // 16 or 32 BCD bytes (each byte → 2 hex digits)
+    /// 8 or 16 raw bytes. Most common.
+    binary,
+    /// 16 or 32 ASCII hex digits representing BCD digits (e.g., "7000...").
+    bcd,
 };
 
 // ─── Spec Definition ───────────────────────────────────────────────────────
 
 /// Configuration for a message specification.
+///
+/// Passed to `Spec.define()` at comptime. All fields except `fields` and
+/// `version` have sensible defaults.
 pub const SpecConfig = struct {
+    /// ISO 8583 version this spec targets.
     version: Version,
+    /// How the MTI is encoded on the wire. Default: .ascii (4 bytes).
     mti_encoding: MtiEncoding = .ascii,
+    /// How the bitmap is encoded on the wire. Default: .binary (8/16 bytes).
     bitmap_encoding: BitmapEncoding = .binary,
+    /// Field descriptors for all supported data elements.
     fields: []const FieldDescriptor,
 };
 
 /// The compiled specification. All data is comptime-known.
+///
+/// A `Spec` is an immutable, compile-time constant. The `field_index` lookup
+/// table is built at comptime, giving O(1) field resolution at runtime with
+/// zero initialization cost.
 pub const Spec = struct {
+    /// ISO 8583 version this spec targets.
     version: Version,
+    /// How the MTI is encoded on the wire.
     mti_encoding: MtiEncoding,
+    /// How the bitmap is encoded on the wire.
     bitmap_encoding: BitmapEncoding,
+    /// Field descriptors, ordered by field ID.
     fields: []const FieldDescriptor,
     /// Computed lookup table: field_id → index in fields array.
-    /// Built at comptime for O(1) field resolution.
+    /// Built at comptime for O(1) field resolution. -1 = not in spec.
     field_index: [129]i16, // 0–128; -1 = not in spec
 
     const Self = @This();
 
     /// Define a spec at comptime.
+    ///
+    /// Builds the field lookup table and validates that all field IDs are in
+    /// the range 2–128. Fields outside this range are ignored.
+    ///
+    /// ```zig
+    /// const MySpec = Spec.define(.{
+    ///     .version = .v1987,
+    ///     .fields = &.{ field(2, .llvar, .ascii_numeric, .{ .max_len = 19 }) },
+    /// });
+    /// ```
     pub fn define(comptime config: SpecConfig) Spec {
         comptime var field_index: [129]i16 = .{-1} ** 129;
         comptime for (config.fields, 0..) |desc, i| {
@@ -77,7 +137,8 @@ pub const Spec = struct {
         };
     }
 
-    /// Look up a field descriptor by ID. Returns null if not in spec.
+    /// Look up a field descriptor by ID. Returns null if not in spec or out of range.
+    /// O(1) — direct array indexing into the comptime-built lookup table.
     pub fn lookup(self: Self, field_id: usize) ?FieldDescriptor {
         if (field_id < 2 or field_id > 128) return null;
         const idx = self.field_index[field_id];
@@ -85,7 +146,7 @@ pub const Spec = struct {
         return self.fields[@intCast(idx)];
     }
 
-    /// Runtime lookup by field ID.
+    /// Runtime lookup by field ID. Alias for `lookup`.
     pub fn lookupRuntime(self: Self, field_id: usize) ?FieldDescriptor {
         if (field_id < 2 or field_id > 128) return null;
         const idx = self.field_index[field_id];
@@ -103,7 +164,7 @@ pub const Spec = struct {
         return self.fields.len;
     }
 
-    /// Get MTI byte length based on encoding.
+    /// Get MTI wire length in bytes based on encoding (4 for ASCII, 2 for BCD).
     pub fn mtiLen(self: Self) usize {
         return switch (self.mti_encoding) {
             .ascii => 4,
@@ -111,7 +172,8 @@ pub const Spec = struct {
         };
     }
 
-    /// Get the minimum bitmap byte length (primary only = 8 bytes).
+    /// Get the minimum bitmap byte length (primary only).
+    /// 8 bytes for binary encoding, 16 bytes for BCD encoding.
     pub fn bitmapLen(self: Self) usize {
         return switch (self.bitmap_encoding) {
             .binary => 8,

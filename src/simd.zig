@@ -1,13 +1,32 @@
-//! SIMD-accelerated primitives for ISO 8583 parsing.
+//! # SIMD-Accelerated Primitives for ISO 8583 Parsing
 //!
-//! Provides vectorized implementations of:
-//! - ASCII digit validation
-//! - BCD ↔ ASCII conversion
-//! - Bitmap scanning
-//! - Memory search (memchr)
+//! Vectorized implementations of hot-path operations using Zig's `@Vector`
+//! intrinsics, which compile to SSE/AVX on x86-64 and NEON on ARM:
 //!
-//! All SIMD functions have scalar fallbacks for sub-vector tails
-//! and platforms without native vector support.
+//! - **ASCII digit/alphanumeric validation** — range checks 16 bytes at once
+//! - **BCD ↔ ASCII conversion** — nibble extraction via SIMD shifts/masks
+//! - **Bitmap scanning** — presence decode and population count
+//! - **memchr** — byte search via vector equality + bitmask
+//!
+//! ## Design
+//!
+//! Every SIMD function processes data in chunks of `SIMD_WIDTH` (16) or
+//! `SIMD_WIDTH_WIDE` (32) bytes and falls back to a scalar loop for the
+//! tail. Scalar fallback implementations are exported for testing and for
+//! platforms without native vector support.
+//!
+//! ## Example
+//!
+//! ```zig
+//! const simd = @import("simd");
+//!
+//! // Validate a PAN (SIMD path for >= 16 bytes)
+//! if (!simd.validateAsciiDigits("4111111111111111")) return error.InvalidPan;
+//!
+//! // Convert 16 BCD bytes to 32 ASCII digits
+//! var ascii: [32]u8 = undefined;
+//! simd.bcdToAscii(bcd_bytes, &ascii);
+//! ```
 
 const std = @import("std");
 

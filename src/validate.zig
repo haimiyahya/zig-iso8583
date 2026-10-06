@@ -1,7 +1,22 @@
-//! Field validation for ISO 8583 messages.
+//! # Field Validation for ISO 8583 Messages
 //!
-//! Uses SIMD-accelerated validation for ASCII digit and alphanumeric checks.
-//! Comptime rules can be defined per-spec for required fields per MTI.
+//! SIMD-accelerated validation of field data against encoding rules, plus
+//! comptime rule tables for required fields per MTI class/function.
+//!
+//! ## Encoding Rules
+//!
+//! | Encoding | Rule | SIMD |
+//! |----------|------|------|
+//! | `ascii_numeric` | All bytes '0'–'9' | 16 bytes/iter |
+//! | `ascii_alpha` | All bytes A-Z, a-z, 0-9 | 16 bytes/iter |
+//! | `ascii_binary` | All bytes 0-9, A-F, a-f | scalar |
+//! | `bcd` | All nibbles <= 9 | scalar |
+//! | `binary` | No constraint | n/a |
+//!
+//! ## Required Field Rules
+//!
+//! `RequiredFieldsRule` maps an MTI class+function pair to the fields that
+//! must be present. `RulesV1987` provides common rules for 1987 transactions.
 
 const std = @import("std");
 const spec_mod = @import("spec.zig");
@@ -13,18 +28,26 @@ pub const FieldEncoding = encoding.FieldEncoding;
 
 // ─── Validation Errors ─────────────────────────────────────────────────────
 
+/// Errors returned by field data validation.
 pub const ValidationError = error{
+    /// Numeric field contains a non-digit byte.
     InvalidDigits,
+    /// Alphanumeric field contains a non-alphanumeric byte.
     InvalidAlnum,
+    /// Binary field validation failure (reserved).
     InvalidBinary,
+    /// Data length violates a rule.
     InvalidLength,
+    /// Field data is empty.
     EmptyField,
 };
 
 // ─── Field Validation ──────────────────────────────────────────────────────
 
 /// Validate a field's data according to its encoding.
-/// Uses SIMD for ASCII validation where possible.
+///
+/// Uses SIMD for ASCII digit/alphanumeric checks where the data is long
+/// enough. Returns error.EmptyField for zero-length data.
 pub fn validateFieldData(data: []const u8, enc: FieldEncoding) ValidationError!void {
     if (data.len == 0) return error.EmptyField;
 
@@ -61,10 +84,15 @@ pub fn validateFieldData(data: []const u8, enc: FieldEncoding) ValidationError!v
 // ─── MTI-Based Required Fields ─────────────────────────────────────────────
 
 /// A rule defining required fields for a given MTI class+function.
+///
+/// Field IDs in `required` are 2–128 (field 1 is the bitmap indicator).
 pub const RequiredFieldsRule = struct {
+    /// MTI digit 2 (message class): 1=auth, 2=financial, 4=reversal, 8=network.
     msg_class: u4,
+    /// MTI digit 3 (message function): 0=request, 1=response, ...
     msg_function: u4,
-    required: []const u8, // field IDs that must be present
+    /// Field IDs that must be present for this message type.
+    required: []const u8,
 };
 
 /// Validate that a message has all required fields for its MTI.
@@ -89,7 +117,15 @@ pub fn validateRequiredFields(
 
 // ─── Common Validation Rules ───────────────────────────────────────────────
 
-/// Common required fields for ISO 8583:1987 authorization requests (0100).
+/// Common required-fields rules for ISO 8583:1987.
+///
+/// | Class | Function | Required fields |
+/// |-------|----------|-----------------|
+/// | 1 (auth) | 0 (request) | 2, 3, 4, 7, 11, 41, 49 |
+/// | 1 (auth) | 1 (response) | 2, 3, 4, 7, 11, 39, 41, 49 |
+/// | 2 (financial) | 0 (request) | 2, 3, 4, 7, 11, 41, 49 |
+/// | 4 (reversal) | 0 (request) | 2, 3, 4, 7, 11, 41, 49 |
+/// | 8 (network) | 0 (request) | 7, 11, 41 |
 pub const RulesV1987 = [_]RequiredFieldsRule{
     .{
         .msg_class = 1, // authorization
@@ -121,6 +157,7 @@ pub const RulesV1987 = [_]RequiredFieldsRule{
 // ─── SIMD Hex Validation ───────────────────────────────────────────────────
 
 /// Validate ASCII hex bytes using SIMD (16 bytes at a time).
+/// Valid characters: 0-9, A-F, a-f. Returns true for empty input.
 pub fn validateAsciiHex(slice: []const u8) bool {
     if (slice.len == 0) return true;
 

@@ -1,21 +1,46 @@
-//! Bitmap encode/decode for ISO 8583 messages.
+//! # ISO 8583 Bitmap Encode/Decode
 //!
 //! ISO 8583 uses a 64-bit (primary) or 128-bit (primary + secondary) bitmap
-//! to indicate which data elements are present. Bit 1 of the primary bitmap
-//! signals the presence of a secondary bitmap.
+//! to indicate which data elements are present in a message.
 //!
-//! Bitmap layout (big-endian, MSB = bit 1):
-//!   Byte 0, bit 7 → field 1
-//!   Byte 0, bit 6 → field 2
-//!   ...
-//!   Byte 7, bit 0 → field 8
-//!   Byte 8, bit 7 → field 9 (if secondary bitmap present)
-//!   ...
-//!   Byte 15, bit 0 → field 64
+//! ## Bitmap Layout (big-endian, MSB = field 1)
 //!
-//! NOTE: Field numbering is 1-based. Field 0 does not exist.
-//! The bitmap only covers fields 1–64 (primary) and 65–128 (secondary).
-//! In practice, field 1 is the secondary bitmap indicator itself.
+//! ```
+//! Byte 0, bit 7 → field 1  (secondary bitmap indicator)
+//! Byte 0, bit 6 → field 2  (PAN)
+//! Byte 0, bit 5 → field 3
+//! ...
+//! Byte 7, bit 0 → field 8
+//! Byte 8, bit 7 → field 9  (if secondary bitmap present)
+//! ...
+//! Byte 15, bit 0 → field 64
+//! ```
+//!
+//! **Bit 1** of the primary bitmap is the secondary bitmap indicator:
+//! - Set → secondary bitmap (bytes 8–15) follows, covering fields 65–128
+//! - Clear → only primary bitmap (bytes 0–7), fields 65–128 are absent
+//!
+//! Field numbering is 1-based. Field 0 does not exist.
+//!
+//! ## Usage
+//!
+//! ```zig
+//! var bm = Bitmap.init();
+//! bm.set(2);   // Mark field 2 (PAN) as present
+//! bm.set(48);  // Mark field 48 as present
+//! try std.testing.expect(bm.isPresent(2));
+//!
+//! // Encode to wire format
+//! var out: [16]u8 = undefined;
+//! const len = try bm.encode(&out); // Returns 8 or 16
+//!
+//! // Parse from wire format
+//! const result = try Bitmap.parse(out[0..len]);
+//!
+//! // Iterate present fields
+//! var iter = bm.iterator();
+//! while (iter.next()) |field_id| { ... }
+//! ```
 
 const std = @import("std");
 const simd = @import("simd.zig");
