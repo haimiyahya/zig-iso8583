@@ -1,0 +1,3 @@
+# .gitignore for zig-iso8583
+zig-out/
+.zig-cache/
