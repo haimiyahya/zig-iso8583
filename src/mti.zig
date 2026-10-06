@@ -106,6 +106,10 @@ pub const Mti = packed struct {
 
     /// Parse an MTI from 4 ASCII digit bytes.
     pub fn parse(buf: *const [4]u8) !Mti {
+        // Validate all digits first
+        for (buf) |b| {
+            if (b < 0x30 or b > 0x39) return error.InvalidMti;
+        }
         return .{
             .version = @intCast(buf[0] - 0x30),
             .class = try MsgClass.fromDigit(buf[1]),
