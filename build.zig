@@ -5,7 +5,9 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     // Single static library — no runtime DLL discovery, no XML at runtime.
-    const iso_mod = b.createModule(.{
+    // Registered as a named module so downstream builds (simulators,
+    // DebitHost-Z host) can consume it via b.dependency("iso8583", ...).
+    const iso_mod = b.addModule("iso8583", .{
         .root_source_file = b.path("src/iso8583.zig"),
         .target = target,
         .optimize = optimize,

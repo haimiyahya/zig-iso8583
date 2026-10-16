@@ -934,3 +934,35 @@ test "padded message round-trips through encode/decode" {
     try std.testing.expectEqualStrings("000007", got.getField(11).?);
     try std.testing.expectEqualStrings("TERM002 ", got.getField(41).?);
 }
+
+// ─── lvar (1-digit length prefix) ─────────────────────────────────────────
+
+const LvarSpec = spec_mod.Spec.define(.{
+    .fields = &.{
+        field_mod.field(2, .lvar, .ascii_numeric, .{ .max_len = 19 }),
+        field_mod.field(35, .lvar, .ascii_alpha, .{ .max_len = 37 }),
+    },
+});
+
+test "lvar encode wire format" {
+    const allocator = std.testing.allocator;
+
+    var msg = try Message.init(allocator, &LvarSpec);
+    defer msg.deinit();
+    try setMti(&msg, 0, .financial, .request, .acquirer);
+    try setField(&msg, 2, "123456789"); // 9 digits fits 1-digit prefix
+
+    var buf = std.Io.Writer.Allocating.init(allocator);
+    defer buf.deinit();
+    try encode(&msg, &buf.writer);
+
+    const wire = buf.written();
+    // DE2 wire: "9" + "123456789" at offset 12
+    try std.testing.expectEqual(@as(u8, '9'), wire[12]);
+    try std.testing.expectEqualSlices(u8, "123456789", wire[13..22]);
+
+    var msg2 = try Message.init(allocator, &LvarSpec);
+    defer msg2.deinit();
+    try msg2.decode(wire);
+    try std.testing.expectEqualStrings("123456789", msg2.getField(2).?.data);
+}

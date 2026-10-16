@@ -86,6 +86,9 @@ pub const LengthType = enum(u8) {
     fixed_96 = 96,
     fixed_100 = 100,
     fixed_128 = 128,
+    /// Variable-length: 1 ASCII digit length prefix (legacy terminal dialects,
+    /// e.g. GHL UAISOMM DE2/DE35 with len="1").
+    lvar,
     /// Variable-length: 2 ASCII digit length prefix.
     llvar,
     /// Variable-length: 3 ASCII digit length prefix.
@@ -96,15 +99,16 @@ pub const LengthType = enum(u8) {
     /// Returns the fixed byte length, or null for variable-length types.
     pub fn fixedLen(self: LengthType) ?usize {
         return switch (self) {
-            .llvar, .lllvar, .llllvar => null,
+            .lvar, .llvar, .lllvar, .llllvar => null,
             else => @intFromEnum(self),
         };
     }
 
     /// Returns the number of digits in the length prefix for variable-length fields.
-    /// llvar→2, lllvar→3, llllvar→4, fixed→null.
+    /// lvar→1, llvar→2, lllvar→3, llllvar→4, fixed→null.
     pub fn prefixDigits(self: LengthType) ?u3 {
         return switch (self) {
+            .lvar => 1,
             .llvar => 2,
             .lllvar => 3,
             .llllvar => 4,

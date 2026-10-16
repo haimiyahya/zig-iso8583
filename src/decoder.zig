@@ -270,7 +270,7 @@ pub const Message = struct {
         var data_offset: usize = offset;
 
         switch (desc.length_type) {
-            .llvar, .lllvar, .llllvar => {
+            .lvar, .llvar, .lllvar, .llllvar => {
                 const prefix_digits = desc.length_type.prefixDigits().?;
                 if (buf.len < offset + prefix_digits) return error.BufferTooShort;
 
