@@ -319,17 +319,17 @@ test "writeFieldName: named and fallback" {
 
     var buf: [64]u8 = undefined;
 
-    var fbs1 = std.io.fixedBufferStream(&buf);
-    try Named.writeFieldName(4, fbs1.writer());
-    try std.testing.expectEqualStrings("Amount, transaction", fbs1.getWritten());
+    var w1 = std.Io.Writer.fixed(&buf);
+    try Named.writeFieldName(4, &w1);
+    try std.testing.expectEqualStrings("Amount, transaction", w1.buffered());
 
-    var fbs2 = std.io.fixedBufferStream(&buf);
-    try Unnamed.writeFieldName(4, fbs2.writer());
-    try std.testing.expectEqualStrings("DE4", fbs2.getWritten());
+    var w2 = std.Io.Writer.fixed(&buf);
+    try Unnamed.writeFieldName(4, &w2);
+    try std.testing.expectEqualStrings("DE4", w2.buffered());
 
-    var fbs3 = std.io.fixedBufferStream(&buf);
-    try spec_mod.SpecV1987.writeFieldName(127, fbs3.writer()); // not in spec
-    try std.testing.expectEqualStrings("DE127", fbs3.getWritten());
+    var w3 = std.Io.Writer.fixed(&buf);
+    try spec_mod.SpecV1987.writeFieldName(127, &w3); // not in spec
+    try std.testing.expectEqualStrings("DE127", w3.buffered());
 }
 
 test "Spec unknown_fields default is reject" {

@@ -1,12 +1,13 @@
 //! # ISO 8583 Message Encoder (Serializer)
 //!
 //! Builds wire-format bytes from a `Message` and writes them to any
-//! `std.io.Writer`.
+//! `*std.Io.Writer`.
 //!
 //! ## Encode Pipeline
 //!
 //! ```text
 //! Message ──► encode() ──► writer
+//! (pass `*std.Io.Writer`)
 //!              │
 //!              ├─ 1. encodeMti()     — ASCII "0100" or BCD 0x01 0x00
 //!              ├─ 2. encodeBitmap()  — from present fields; auto secondary
@@ -23,10 +24,10 @@
 //! try setField(&msg, 2, "4111111111111111");
 //! try setField(&msg, 4, "000000001000");
 //!
-//! var buf = std.ArrayList(u8).init(allocator);
+//! var buf = std.Io.Writer.Allocating.init(allocator);
 //! defer buf.deinit();
-//! try iso8583.encode(&msg, buf.writer());
-//! // buf.items is now the wire-format message
+//! try iso8583.encode(&msg, &buf.writer);
+//! // buf.written() is now the wire-format message
 //! ```
 //!
 //! ## Field Ordering
@@ -74,35 +75,35 @@ pub const EncodeError = error{
 /// Encode a Message to a writer.
 ///
 /// Writes MTI, bitmap, and all present fields in ascending field-ID order.
-/// The writer can be anything accepting `writeAll` (ArrayList writer,
-/// fixedBufferStream, file writer, etc.).
-pub fn encode(msg: *const Message, writer: anytype) !void {
+/// Pass any `*std.Io.Writer` (`std.Io.Writer.Allocating` for heap output,
+/// `std.Io.Writer.fixed(&buf)` for stack buffers, file writers, etc.).
+pub fn encode(msg: *const Message, w: *std.Io.Writer) !void {
     // 1. Encode MTI
-    try encodeMti(msg, writer);
+    try encodeMti(msg, w);
 
     // 2. Encode Bitmap
-    try encodeBitmap(msg, writer);
+    try encodeBitmap(msg, w);
 
     // 3. Encode fields
-    try encodeFields(msg, writer);
+    try encodeFields(msg, w);
 }
 
 /// Encode the MTI.
-fn encodeMti(msg: *const Message, writer: anytype) !void {
+fn encodeMti(msg: *const Message, w: *std.Io.Writer) !void {
     switch (msg.spec.mti_encoding) {
         .ascii => {
             const ascii = msg.mti.toAscii();
-            try writer.writeAll(&ascii);
+            try w.writeAll(&ascii);
         },
         .bcd => {
             const bcd = try msg.mti.toBcd();
-            try writer.writeAll(&bcd);
+            try w.writeAll(&bcd);
         },
     }
 }
 
 /// Encode the bitmap.
-fn encodeBitmap(msg: *const Message, writer: anytype) !void {
+fn encodeBitmap(msg: *const Message, w: *std.Io.Writer) !void {
     // Build bitmap from present fields
     var bm = Bitmap.init();
     var iter = msg.field_store.iterator();
@@ -114,7 +115,7 @@ fn encodeBitmap(msg: *const Message, writer: anytype) !void {
         .binary => {
             var out: [16]u8 = undefined;
             const len = try bm.encode(&out);
-            try writer.writeAll(out[0..len]);
+            try w.writeAll(out[0..len]);
         },
         .bcd => {
             // BCD bitmap: each byte → 2 hex ASCII digits
@@ -123,41 +124,41 @@ fn encodeBitmap(msg: *const Message, writer: anytype) !void {
 
             var bcd_buf: [32]u8 = undefined;
             simd.bcdToAscii(out[0..len], &bcd_buf);
-            try writer.writeAll(bcd_buf[0 .. len * 2]);
+            try w.writeAll(bcd_buf[0 .. len * 2]);
         },
     }
 }
 
 /// Encode all present fields.
-fn encodeFields(msg: *const Message, writer: anytype) !void {
+fn encodeFields(msg: *const Message, w: *std.Io.Writer) !void {
     var iter = msg.field_store.iterator();
     while (iter.next()) |field_id| {
         const desc = msg.spec.lookupRuntime(field_id) orelse continue;
         const data = msg.field_store.get(field_id) orelse continue;
-        try encodeField(writer, data, desc);
+        try encodeField(w, data, desc);
     }
 }
 
 /// Encode a single field.
-fn encodeField(writer: anytype, data: []const u8, desc: spec_mod.FieldDescriptor) !void {
+fn encodeField(w: *std.Io.Writer, data: []const u8, desc: spec_mod.FieldDescriptor) !void {
     // Write length prefix for variable-length fields
     switch (desc.length_type) {
         .llvar, .lllvar => {
             const prefix_digits = desc.length_type.prefixDigits().?;
             var prefix_buf: [4]u8 = undefined;
             encoding.writeAsciiUint(data.len, prefix_buf[4 - prefix_digits .. 4]);
-            try writer.writeAll(prefix_buf[4 - prefix_digits .. 4]);
+            try w.writeAll(prefix_buf[4 - prefix_digits .. 4]);
         },
         .llllvar => {
             var prefix_buf: [4]u8 = undefined;
             encoding.writeAsciiUint(data.len, &prefix_buf);
-            try writer.writeAll(&prefix_buf);
+            try w.writeAll(&prefix_buf);
         },
         else => {},
     }
 
     // Write field data
-    try writer.writeAll(data);
+    try w.writeAll(data);
 }
 
 // ─── Message Builder Helpers ───────────────────────────────────────────────
@@ -238,8 +239,8 @@ pub fn setFieldInt(msg: *Message, field_id: usize, value: u64) !void {
 
     // cheap width check before allocating
     var tmp: [20]u8 = undefined;
-    const written = std.fmt.formatIntBuf(&tmp, value, 10, .lower, .{});
-    if (written > digits) return error.Overflow;
+    const printed = std.fmt.bufPrint(&tmp, "{d}", .{value}) catch return error.Overflow;
+    if (printed.len > digits) return error.Overflow;
 
     const buf = try msg.arena.allocator().alloc(u8, digits);
     encoding.writeAsciiUint(value, buf); // right-aligned, zero-padded
@@ -322,13 +323,13 @@ test "encode simple message" {
     try setField(&msg, 41, "TERM001 ");
     try setField(&msg, 49, "840");
 
-    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf.deinit();
 
-    try encode(&msg, buf.writer());
+    try encode(&msg, &buf.writer);
 
     // Verify the encoded message starts with the MTI
-    try std.testing.expectEqualSlices(u8, "0100", buf.items[0..4]);
+    try std.testing.expectEqualSlices(u8, "0100", buf.written()[0..4]);
 }
 
 test "round-trip encode/decode" {
@@ -358,14 +359,14 @@ test "round-trip encode/decode" {
     try setField(&msg, 41, "TERM001 ");
     try setField(&msg, 49, "840");
 
-    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf.deinit();
-    try encode(&msg, buf.writer());
+    try encode(&msg, &buf.writer);
 
     // Decode
     var msg2 = try Message.init(std.testing.allocator, &test_spec);
     defer msg2.deinit();
-    try msg2.decode(buf.items);
+    try msg2.decode(buf.written());
 
     // Verify
     try std.testing.expectEqual(mti_mod.MsgClass.authorization, msg2.mti.class);
@@ -376,9 +377,9 @@ test "round-trip encode/decode" {
     try std.testing.expectEqualSlices(u8, "840", msg2.getField(49).?);
 
     // Re-encode and compare
-    var buf2 = std.ArrayList(u8).init(std.testing.allocator);
+    var buf2 = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf2.deinit();
-    try encode(&msg2, buf2.writer());
+    try encode(&msg2, &buf2.writer);
 
-    try std.testing.expectEqualSlices(u8, buf.items, buf2.items);
+    try std.testing.expectEqualSlices(u8, buf.written(), buf2.written());
 }

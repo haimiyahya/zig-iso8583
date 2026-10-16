@@ -38,7 +38,7 @@
 //!
 //! | Function | Description |
 //! |----------|-------------|
-//! | `encode(&msg, writer)` | Serialize a message to any `std.io.Writer` |
+//! | `encode(&msg, &w)` | Serialize a message to a `*std.Io.Writer` |
 //! | `setMti(&msg, ver, class, func, origin)` | Set MTI fields on a message |
 //! | `setField(&msg, id, data)` | Set a field's data with validation |
 //! | `setFieldPadded(&msg, id, data)` | Set a fixed-length field with ISO padding (numeric '0' right-aligned / alpha ' ' left-aligned) |
@@ -142,5 +142,16 @@ pub const SpecV2003 = spec.SpecV2003;
 
 test {
     // Run all sub-module tests
-    @import("std").testing.refAllDeclsRecursive(@This());
+    @import("std").testing.refAllDecls(@This());
+    _ = spec;
+    _ = field;
+    _ = encoding;
+    _ = bitmap;
+    _ = mti;
+    _ = decoder;
+    _ = encoder;
+    _ = validate;
+    _ = simd;
+    _ = zero_copy;
+    _ = framing;
 }

@@ -232,7 +232,7 @@ test "Mti.value" {
 test "Mti.format" {
     const m = try mti.Mti.parse(&[_]u8{ '0', '4', '2', '0' });
     var buf: [4]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    try fbs.writer().print("{}", .{m});
-    try std.testing.expectEqualSlices(u8, "0420", &buf);
+    var w = std.Io.Writer.fixed(&buf);
+    try w.print("{f}", .{m});
+    try std.testing.expectEqualSlices(u8, "0420", w.buffered());
 }

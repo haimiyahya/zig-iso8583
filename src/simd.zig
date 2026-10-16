@@ -174,7 +174,7 @@ pub fn bcdToAscii(bcd: []const u8, out: []u8) void {
         const lo_nibbles = (v & mask_lo) + ascii_offset;
 
         const interleaved = @shuffle(u8, hi_nibbles, lo_nibbles, shuffle_idx);
-        for (0..SIMD_WIDTH * 2) |j| {
+        inline for (0..SIMD_WIDTH * 2) |j| {
             out[i * 2 + j] = interleaved[j];
         }
     }

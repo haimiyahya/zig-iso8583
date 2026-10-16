@@ -396,9 +396,9 @@ test "decode simple message" {
     // Field 41: "TERM001 "
     // Field 49: "840"
 
-    var msg_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var msg_buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer msg_buf.deinit();
-    const writer = msg_buf.writer();
+    const writer = &msg_buf.writer;
 
     // MTI
     try writer.writeAll("0100");
@@ -439,7 +439,7 @@ test "decode simple message" {
     var msg = try Message.init(std.testing.allocator, &test_spec);
     defer msg.deinit();
 
-    try msg.decode(msg_buf.items);
+    try msg.decode(msg_buf.written());
 
     // Verify MTI
     try std.testing.expectEqual(mti_mod.MsgClass.authorization, msg.mti.class);
@@ -478,9 +478,9 @@ test "decode message with secondary bitmap" {
         },
     });
 
-    var msg_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var msg_buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer msg_buf.deinit();
-    const writer = msg_buf.writer();
+    const writer = &msg_buf.writer;
 
     // MTI
     try writer.writeAll("0200");
@@ -510,7 +510,7 @@ test "decode message with secondary bitmap" {
     var msg = try Message.init(std.testing.allocator, &test_spec);
     defer msg.deinit();
 
-    try msg.decode(msg_buf.items);
+    try msg.decode(msg_buf.written());
 
     try std.testing.expectEqual(mti_mod.MsgClass.financial, msg.mti.class);
     try std.testing.expect(msg.isPresent(2));
@@ -532,9 +532,9 @@ test "decode with BCD MTI" {
         },
     });
 
-    var msg_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var msg_buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer msg_buf.deinit();
-    const writer = msg_buf.writer();
+    const writer = &msg_buf.writer;
 
     // BCD MTI: 0x01 0x00 = "0100"
     try writer.writeAll(&[_]u8{ 0x01, 0x00 });
@@ -550,7 +550,7 @@ test "decode with BCD MTI" {
     var msg = try Message.init(std.testing.allocator, &test_spec);
     defer msg.deinit();
 
-    try msg.decode(msg_buf.items);
+    try msg.decode(msg_buf.written());
 
     try std.testing.expectEqual(mti_mod.MsgClass.authorization, msg.mti.class);
     try std.testing.expectEqualSlices(u8, "4111111111111111", msg.getField(2).?);

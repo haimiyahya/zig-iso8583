@@ -96,9 +96,9 @@ test "decode authorization request (0100)" {
     defer msg.deinit();
 
     // Build: MTI=0100, fields 2,3,4,7,11,41,49
-    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf.deinit();
-    const w = buf.writer();
+    const w = &buf.writer;
 
     try w.writeAll("0100");
     var bm = Bitmap.init();
@@ -120,7 +120,7 @@ test "decode authorization request (0100)" {
     try w.writeAll("TERM0001"); // DE41
     try w.writeAll("840"); // DE49
 
-    try msg.decode(buf.items);
+    try msg.decode(buf.written());
     try std.testing.expectEqual(mti_mod.MsgClass.authorization, msg.mti.class);
     try std.testing.expectEqual(mti_mod.MsgFunction.request, msg.mti.function);
     try std.testing.expectEqualSlices(u8, "4111111111111111", msg.getField(2).?);
@@ -135,9 +135,9 @@ test "decode financial request (0200)" {
     var msg = try Message.init(std.testing.allocator, &BasicSpec);
     defer msg.deinit();
 
-    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf.deinit();
-    const w = buf.writer();
+    const w = &buf.writer;
 
     try w.writeAll("0200");
     var bm = Bitmap.init();
@@ -157,7 +157,7 @@ test "decode financial request (0200)" {
     try w.writeAll("TERM0002");
     try w.writeAll("840");
 
-    try msg.decode(buf.items);
+    try msg.decode(buf.written());
     try std.testing.expectEqual(mti_mod.MsgClass.financial, msg.mti.class);
     try std.testing.expectEqual(@as(?u64, 5000), msg.getFieldInt(4));
 }
@@ -166,9 +166,9 @@ test "decode network management (0800)" {
     var msg = try Message.init(std.testing.allocator, &BasicSpec);
     defer msg.deinit();
 
-    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf.deinit();
-    const w = buf.writer();
+    const w = &buf.writer;
 
     try w.writeAll("0800");
     var bm = Bitmap.init();
@@ -182,7 +182,7 @@ test "decode network management (0800)" {
     try w.writeAll("000001"); // DE11
     try w.writeAll("TERM0003"); // DE41
 
-    try msg.decode(buf.items);
+    try msg.decode(buf.written());
     try std.testing.expectEqual(mti_mod.MsgClass.network_management, msg.mti.class);
     try std.testing.expect(!msg.isPresent(2)); // PAN not present
     try std.testing.expect(msg.isPresent(7));
@@ -192,9 +192,9 @@ test "decode with variable-length fields (LLVAR, LLLVAR)" {
     var msg = try Message.init(std.testing.allocator, &VarSpec);
     defer msg.deinit();
 
-    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf.deinit();
-    const w = buf.writer();
+    const w = &buf.writer;
 
     try w.writeAll("0200");
     var bm = Bitmap.init();
@@ -214,7 +214,7 @@ test "decode with variable-length fields (LLVAR, LLLVAR)" {
     try w.writeAll("016ABCDEFGHIJKLMNOP"); // DE48: LLLVAR (prefix "016" → 16 chars)
     try w.writeAll("840"); // DE49
 
-    try msg.decode(buf.items);
+    try msg.decode(buf.written());
     try std.testing.expectEqualSlices(u8, "4111111111111111", msg.getField(2).?);
     try std.testing.expectEqualSlices(u8, "612345678", msg.getField(33).?);
     try std.testing.expectEqualSlices(u8, "ABCDEFGHIJKLMNOP", msg.getField(48).?);
@@ -224,9 +224,9 @@ test "decode with binary fields" {
     var msg = try Message.init(std.testing.allocator, &BinarySpec);
     defer msg.deinit();
 
-    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf.deinit();
-    const w = buf.writer();
+    const w = &buf.writer;
 
     try w.writeAll("0200");
     var bm = Bitmap.init();
@@ -246,7 +246,7 @@ test "decode with binary fields" {
     const mac = [_]u8{ 0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE };
     try w.writeAll(&mac); // DE64
 
-    try msg.decode(buf.items);
+    try msg.decode(buf.written());
     try std.testing.expectEqualSlices(u8, &pin_block, msg.getField(52).?);
     try std.testing.expectEqualSlices(u8, &mac, msg.getField(64).?);
     // Binary fields should not have int_val
@@ -257,9 +257,9 @@ test "decode with BCD MTI" {
     var msg = try Message.init(std.testing.allocator, &BcdMtiSpec);
     defer msg.deinit();
 
-    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf.deinit();
-    const w = buf.writer();
+    const w = &buf.writer;
 
     try w.writeAll(&[_]u8{ 0x02, 0x00 }); // BCD "0200"
     var bm = Bitmap.init();
@@ -273,7 +273,7 @@ test "decode with BCD MTI" {
     try w.writeAll("000000");
     try w.writeAll("000000001000");
 
-    try msg.decode(buf.items);
+    try msg.decode(buf.written());
     try std.testing.expectEqual(mti_mod.MsgClass.financial, msg.mti.class);
     try std.testing.expectEqualSlices(u8, "4111111111111111", msg.getField(2).?);
 }
@@ -282,9 +282,9 @@ test "decode with BCD bitmap" {
     var msg = try Message.init(std.testing.allocator, &BcdBitmapSpec);
     defer msg.deinit();
 
-    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf.deinit();
-    const w = buf.writer();
+    const w = &buf.writer;
 
     try w.writeAll("0100");
     // BCD bitmap: primary = 16 ASCII hex digits for 8 BCD bytes
@@ -296,7 +296,7 @@ test "decode with BCD bitmap" {
     try w.writeAll("000000");
     try w.writeAll("000000001000");
 
-    try msg.decode(buf.items);
+    try msg.decode(buf.written());
     try std.testing.expect(msg.isPresent(2));
     try std.testing.expect(msg.isPresent(3));
     try std.testing.expect(msg.isPresent(4));
@@ -317,15 +317,15 @@ test "encode authorization request" {
     try setField(&msg, 4, "000000001000");
     try setField(&msg, 49, "840");
 
-    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf.deinit();
-    try encode(&msg, buf.writer());
+    try encode(&msg, &buf.writer);
 
     // MTI should be "0100"
-    try std.testing.expectEqualSlices(u8, "0100", buf.items[0..4]);
+    try std.testing.expectEqualSlices(u8, "0100", buf.written()[0..4]);
     // Should have bitmap after MTI
     // Should contain the field data
-    try std.testing.expect(buf.items.len > 4 + 8); // MTI + at least primary bitmap
+    try std.testing.expect(buf.written().len > 4 + 8); // MTI + at least primary bitmap
 }
 
 test "encode with variable-length fields" {
@@ -340,14 +340,14 @@ test "encode with variable-length fields" {
     try setField(&msg, 48, "SOMEDATAHERE");
     try setField(&msg, 49, "840");
 
-    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf.deinit();
-    try encode(&msg, buf.writer());
+    try encode(&msg, &buf.writer);
 
     // Decode back and verify
     var msg2 = try Message.init(std.testing.allocator, &VarSpec);
     defer msg2.deinit();
-    try msg2.decode(buf.items);
+    try msg2.decode(buf.written());
 
     try std.testing.expectEqualSlices(u8, "4111111111111111", msg2.getField(2).?);
     try std.testing.expectEqualSlices(u8, "12345678901", msg2.getField(33).?);
@@ -365,14 +365,14 @@ test "encode with binary fields" {
     try setField(&msg, 52, &[_]u8{ 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF });
     try setField(&msg, 64, &[_]u8{ 0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE });
 
-    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf.deinit();
-    try encode(&msg, buf.writer());
+    try encode(&msg, &buf.writer);
 
     // Decode back
     var msg2 = try Message.init(std.testing.allocator, &BinarySpec);
     defer msg2.deinit();
-    try msg2.decode(buf.items);
+    try msg2.decode(buf.written());
 
     try std.testing.expectEqualSlices(u8, &[_]u8{ 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF }, msg2.getField(52).?);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE }, msg2.getField(64).?);
@@ -395,19 +395,19 @@ test "round-trip basic message" {
     try setField(&msg, 41, "TERM0001");
     try setField(&msg, 49, "840");
 
-    var buf1 = std.ArrayList(u8).init(std.testing.allocator);
+    var buf1 = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf1.deinit();
-    try encode(&msg, buf1.writer());
+    try encode(&msg, &buf1.writer);
 
     var msg2 = try Message.init(std.testing.allocator, &BasicSpec);
     defer msg2.deinit();
-    try msg2.decode(buf1.items);
+    try msg2.decode(buf1.written());
 
-    var buf2 = std.ArrayList(u8).init(std.testing.allocator);
+    var buf2 = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf2.deinit();
-    try encode(&msg2, buf2.writer());
+    try encode(&msg2, &buf2.writer);
 
-    try std.testing.expectEqualSlices(u8, buf1.items, buf2.items);
+    try std.testing.expectEqualSlices(u8, buf1.written(), buf2.written());
 }
 
 test "round-trip with all variable-length types" {
@@ -425,19 +425,19 @@ test "round-trip with all variable-length types" {
     try setField(&msg, 54, "0020401C000000002000");
     try setField(&msg, 62, "ABCDEF0123456789XYZ");
 
-    var buf1 = std.ArrayList(u8).init(std.testing.allocator);
+    var buf1 = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf1.deinit();
-    try encode(&msg, buf1.writer());
+    try encode(&msg, &buf1.writer);
 
     var msg2 = try Message.init(std.testing.allocator, &VarSpec);
     defer msg2.deinit();
-    try msg2.decode(buf1.items);
+    try msg2.decode(buf1.written());
 
-    var buf2 = std.ArrayList(u8).init(std.testing.allocator);
+    var buf2 = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf2.deinit();
-    try encode(&msg2, buf2.writer());
+    try encode(&msg2, &buf2.writer);
 
-    try std.testing.expectEqualSlices(u8, buf1.items, buf2.items);
+    try std.testing.expectEqualSlices(u8, buf1.written(), buf2.written());
 }
 
 test "round-trip BCD MTI" {
@@ -449,23 +449,23 @@ test "round-trip BCD MTI" {
     try setField(&msg, 3, "000000");
     try setField(&msg, 4, "000000001000");
 
-    var buf1 = std.ArrayList(u8).init(std.testing.allocator);
+    var buf1 = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf1.deinit();
-    try encode(&msg, buf1.writer());
+    try encode(&msg, &buf1.writer);
 
     // Verify BCD MTI in wire format (first 2 bytes)
-    try std.testing.expectEqual(@as(u8, 0x01), buf1.items[0]);
-    try std.testing.expectEqual(@as(u8, 0x00), buf1.items[1]);
+    try std.testing.expectEqual(@as(u8, 0x01), buf1.written()[0]);
+    try std.testing.expectEqual(@as(u8, 0x00), buf1.written()[1]);
 
     var msg2 = try Message.init(std.testing.allocator, &BcdMtiSpec);
     defer msg2.deinit();
-    try msg2.decode(buf1.items);
+    try msg2.decode(buf1.written());
 
-    var buf2 = std.ArrayList(u8).init(std.testing.allocator);
+    var buf2 = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf2.deinit();
-    try encode(&msg2, buf2.writer());
+    try encode(&msg2, &buf2.writer);
 
-    try std.testing.expectEqualSlices(u8, buf1.items, buf2.items);
+    try std.testing.expectEqualSlices(u8, buf1.written(), buf2.written());
 }
 
 test "round-trip multiple message types" {
@@ -488,22 +488,22 @@ test "round-trip multiple message types" {
         try setField(&msg, 4, "000000001000");
         try setField(&msg, 49, "840");
 
-        var buf1 = std.ArrayList(u8).init(std.testing.allocator);
+        var buf1 = std.Io.Writer.Allocating.init(std.testing.allocator);
         defer buf1.deinit();
-        try encode(&msg, buf1.writer());
+        try encode(&msg, &buf1.writer);
 
         var msg2 = try Message.init(std.testing.allocator, &BasicSpec);
         defer msg2.deinit();
-        try msg2.decode(buf1.items);
+        try msg2.decode(buf1.written());
 
         try std.testing.expectEqual(m[1], msg2.mti.class);
         try std.testing.expectEqual(m[2], msg2.mti.function);
 
-        var buf2 = std.ArrayList(u8).init(std.testing.allocator);
+        var buf2 = std.Io.Writer.Allocating.init(std.testing.allocator);
         defer buf2.deinit();
-        try encode(&msg2, buf2.writer());
+        try encode(&msg2, &buf2.writer);
 
-        try std.testing.expectEqualSlices(u8, buf1.items, buf2.items);
+        try std.testing.expectEqualSlices(u8, buf1.written(), buf2.written());
     }
 }
 
@@ -530,13 +530,13 @@ test "decode invalid MTI digit" {
     var msg = try Message.init(std.testing.allocator, &BasicSpec);
     defer msg.deinit();
 
-    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf.deinit();
-    const w = buf.writer();
+    const w = &buf.writer;
     try w.writeAll("XX00"); // Invalid MTI
     try w.writeAll(&[_]u8{0} ** 8); // Bitmap
 
-    try std.testing.expectError(error.InvalidMti, msg.decode(buf.items));
+    try std.testing.expectError(error.InvalidMti, msg.decode(buf.written()));
 }
 
 test "setField field not in spec" {
@@ -573,9 +573,9 @@ test "Message field access after decode" {
     var msg = try Message.init(std.testing.allocator, &BasicSpec);
     defer msg.deinit();
 
-    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf.deinit();
-    const w = buf.writer();
+    const w = &buf.writer;
     try w.writeAll("0100");
     var bm = Bitmap.init();
     bm.set(2);
@@ -586,7 +586,7 @@ test "Message field access after decode" {
     try w.writeAll("164111111111111111");
     try w.writeAll("004000");
 
-    try msg.decode(buf.items);
+    try msg.decode(buf.written());
 
     // Present fields
     try std.testing.expect(msg.isPresent(2));
@@ -642,9 +642,9 @@ test "zero-copy: field data points into source buffer" {
     var msg = try Message.init(std.testing.allocator, &BasicSpec);
     defer msg.deinit();
 
-    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf.deinit();
-    const w = buf.writer();
+    const w = &buf.writer;
     try w.writeAll("0100");
     var bm = Bitmap.init();
     bm.set(2);
@@ -653,13 +653,13 @@ test "zero-copy: field data points into source buffer" {
     try w.writeAll(bm_bytes[0..bm_len]);
     try w.writeAll("164111111111111111");
 
-    const buf_ptr = @intFromPtr(buf.items.ptr);
-    try msg.decode(buf.items);
+    const buf_ptr = @intFromPtr(buf.written().ptr);
+    try msg.decode(buf.written());
 
     const pan = msg.getField(2).?;
     // The PAN slice should point within the source buffer
     try std.testing.expect(@intFromPtr(pan.ptr) >= buf_ptr);
-    try std.testing.expect(@intFromPtr(pan.ptr) + pan.len <= buf_ptr + buf.items.len);
+    try std.testing.expect(@intFromPtr(pan.ptr) + pan.len <= buf_ptr + buf.written().len);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -670,13 +670,13 @@ test "decode message with only MTI and no fields" {
     var msg = try Message.init(std.testing.allocator, &BasicSpec);
     defer msg.deinit();
 
-    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf.deinit();
-    const w = buf.writer();
+    const w = &buf.writer;
     try w.writeAll("0800");
     try w.writeAll(&[_]u8{0} ** 8); // Empty primary bitmap
 
-    try msg.decode(buf.items);
+    try msg.decode(buf.written());
     try std.testing.expectEqual(mti_mod.MsgClass.network_management, msg.mti.class);
     try std.testing.expectEqual(@as(usize, 0), msg.fieldCount());
 }
@@ -685,9 +685,9 @@ test "decode LLVAR with minimal length (0)" {
     var msg = try Message.init(std.testing.allocator, &VarSpec);
     defer msg.deinit();
 
-    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf.deinit();
-    const w = buf.writer();
+    const w = &buf.writer;
     try w.writeAll("0200");
     var bm = Bitmap.init();
     bm.set(2);
@@ -700,7 +700,7 @@ test "decode LLVAR with minimal length (0)" {
     try w.writeAll("000000"); // DE3
     try w.writeAll("000000001000"); // DE4
 
-    try msg.decode(buf.items);
+    try msg.decode(buf.written());
     const pan = msg.getField(2).?;
     try std.testing.expectEqual(@as(usize, 0), pan.len);
 }
@@ -721,13 +721,13 @@ test "encode/decode PAN with varying lengths" {
         try setField(&msg, 3, "000000");
         try setField(&msg, 4, "000000001000");
 
-        var buf1 = std.ArrayList(u8).init(std.testing.allocator);
+        var buf1 = std.Io.Writer.Allocating.init(std.testing.allocator);
         defer buf1.deinit();
-        try encode(&msg, buf1.writer());
+        try encode(&msg, &buf1.writer);
 
         var msg2 = try Message.init(std.testing.allocator, &BasicSpec);
         defer msg2.deinit();
-        try msg2.decode(buf1.items);
+        try msg2.decode(buf1.written());
         try std.testing.expectEqualSlices(u8, pan, msg2.getField(2).?);
     }
 }
@@ -736,9 +736,9 @@ test "decode field with all-zeros numeric value" {
     var msg = try Message.init(std.testing.allocator, &BasicSpec);
     defer msg.deinit();
 
-    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf.deinit();
-    const w = buf.writer();
+    const w = &buf.writer;
     try w.writeAll("0100");
     var bm = Bitmap.init();
     bm.set(3);
@@ -749,7 +749,7 @@ test "decode field with all-zeros numeric value" {
     try w.writeAll("000000"); // DE3: all zeros
     try w.writeAll("000000000000"); // DE4: all zeros
 
-    try msg.decode(buf.items);
+    try msg.decode(buf.written());
     try std.testing.expectEqual(@as(?u64, 0), msg.getFieldInt(3));
     try std.testing.expectEqual(@as(?u64, 0), msg.getFieldInt(4));
 }
@@ -759,10 +759,10 @@ test "decode multiple messages sequentially with reset" {
     defer msg.deinit();
 
     // Message 1
-    var buf1 = std.ArrayList(u8).init(std.testing.allocator);
+    var buf1 = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf1.deinit();
     {
-        const w = buf1.writer();
+        const w = &buf1.writer;
         try w.writeAll("0100");
         var bm = Bitmap.init();
         bm.set(2);
@@ -773,10 +773,10 @@ test "decode multiple messages sequentially with reset" {
     }
 
     // Message 2
-    var buf2 = std.ArrayList(u8).init(std.testing.allocator);
+    var buf2 = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf2.deinit();
     {
-        const w = buf2.writer();
+        const w = &buf2.writer;
         try w.writeAll("0200");
         var bm = Bitmap.init();
         bm.set(3);
@@ -787,13 +787,13 @@ test "decode multiple messages sequentially with reset" {
     }
 
     // Decode message 1
-    try msg.decode(buf1.items);
+    try msg.decode(buf1.written());
     try std.testing.expectEqual(mti_mod.MsgClass.authorization, msg.mti.class);
     try std.testing.expect(msg.isPresent(2));
 
     // Reset and decode message 2
     msg.reset();
-    try msg.decode(buf2.items);
+    try msg.decode(buf2.written());
     try std.testing.expectEqual(mti_mod.MsgClass.financial, msg.mti.class);
     try std.testing.expect(!msg.isPresent(2)); // Should be cleared
     try std.testing.expect(msg.isPresent(3));
@@ -922,13 +922,13 @@ test "padded message round-trips through encode/decode" {
     try setFieldInt(&msg, 11, 7);
     try setFieldPadded(&msg, 41, "TERM002");
 
-    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf.deinit();
-    try encode(&msg, buf.writer());
+    try encode(&msg, &buf.writer);
 
     var got = try Message.init(std.testing.allocator, &BasicSpec);
     defer got.deinit();
-    try got.decode(buf.items);
+    try got.decode(buf.written());
 
     try std.testing.expectEqualStrings("000000150000", got.getField(4).?);
     try std.testing.expectEqualStrings("000007", got.getField(11).?);

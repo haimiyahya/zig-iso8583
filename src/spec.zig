@@ -193,15 +193,15 @@ pub const Spec = struct {
     ///
     /// ```zig
     /// var buf: [64]u8 = undefined;
-    /// var fbs = std.io.fixedBufferStream(&buf);
-    /// try spec.writeFieldName(4, fbs.writer());
-    /// // fbs.getWritten() == "Amount, transaction" (SpecV1987)
+    /// var w = std.Io.Writer.fixed(&buf);
+    /// try spec.writeFieldName(4, &w);
+    /// // w.buffered() == "Amount, transaction" (SpecV1987)
     /// ```
-    pub fn writeFieldName(self: Self, field_id: usize, writer: anytype) !void {
+    pub fn writeFieldName(self: Self, field_id: usize, w: *std.Io.Writer) !void {
         if (self.nameOf(field_id)) |n| {
-            try writer.writeAll(n);
+            try w.writeAll(n);
         } else {
-            try writer.print("DE{d}", .{field_id});
+            try w.print("DE{d}", .{field_id});
         }
     }
 

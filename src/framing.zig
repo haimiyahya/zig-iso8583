@@ -30,11 +30,11 @@
 //! try msg.decode(payload);
 //!
 //! // Outbound: encoded message → socket frame
-//! var buf = std.ArrayList(u8).init(alloc);
+//! var buf = std.Io.Writer.Allocating.init(alloc);
 //! defer buf.deinit();
 //! const lp = try framing.LengthPrefix.encode(header.len + encoded.len);
-//! try buf.appendSlice(&lp);
-//! try framing.attachTransportHeader(buf.writer(), &header, encoded);
+//! try buf.writer.writeAll(&lp);
+//! try framing.attachTransportHeader(&buf.writer, &header, encoded);
 //! ```
 
 const std = @import("std");
@@ -61,10 +61,10 @@ pub fn stripTransportHeader(frame: []const u8, header_len: usize) FramingError![
 }
 
 /// Write a transport header followed by the (already encoded) ISO 8583
-/// message to `writer`.
-pub fn attachTransportHeader(writer: anytype, header: []const u8, encoded_msg: []const u8) !void {
-    try writer.writeAll(header);
-    try writer.writeAll(encoded_msg);
+/// message to `w`.
+pub fn attachTransportHeader(w: *std.Io.Writer, header: []const u8, encoded_msg: []const u8) !void {
+    try w.writeAll(header);
+    try w.writeAll(encoded_msg);
 }
 
 // ─── 2-byte Length Prefix ────────────────────────────────────────────────
@@ -119,10 +119,10 @@ test "strip header too short" {
 }
 
 test "attach transport header" {
-    var out = std.ArrayList(u8).init(testing.allocator);
+    var out = std.Io.Writer.Allocating.init(testing.allocator);
     defer out.deinit();
-    try attachTransportHeader(out.writer(), "ISO025000070", "0200...");
-    try testing.expectEqualStrings("ISO0250000700200...", out.items);
+    try attachTransportHeader(&out.writer, "ISO025000070", "0200...");
+    try testing.expectEqualStrings("ISO0250000700200...", out.written());
 }
 
 test "length prefix round trip" {

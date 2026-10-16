@@ -4,11 +4,17 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const lib = b.addStaticLibrary(.{
-        .name = "iso8583",
+    // Single static library — no runtime DLL discovery, no XML at runtime.
+    const iso_mod = b.createModule(.{
         .root_source_file = b.path("src/iso8583.zig"),
         .target = target,
         .optimize = optimize,
+    });
+
+    const lib = b.addLibrary(.{
+        .name = "iso8583",
+        .root_module = iso_mod,
+        .linkage = .static,
     });
     b.installArtifact(lib);
 
@@ -18,9 +24,7 @@ pub fn build(b: *std.Build) void {
 
     // Core unit tests (refAllDeclsRecursive)
     const unit_tests = b.addTest(.{
-        .root_source_file = b.path("src/iso8583.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = iso_mod,
     });
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);
 
@@ -35,34 +39,43 @@ pub fn build(b: *std.Build) void {
         "src/test_integration.zig",
     };
     inline for (test_files) |path| {
-        const t = b.addTest(.{
+        const mod = b.createModule(.{
             .root_source_file = b.path(path),
             .target = target,
             .optimize = optimize,
+        });
+        const t = b.addTest(.{
+            .root_module = mod,
         });
         test_step.dependOn(&b.addRunArtifact(t).step);
     }
 
     // ── Benchmark ────────────────────────────────────────────────────────
 
-    const bench = b.addExecutable(.{
-        .name = "iso8583-bench",
+    const bench_mod = b.createModule(.{
         .root_source_file = b.path("src/bench.zig"),
         .target = target,
         .optimize = .ReleaseFast,
+    });
+    const bench = b.addExecutable(.{
+        .name = "iso8583-bench",
+        .root_module = bench_mod,
     });
     const bench_step = b.step("bench", "Run benchmarks");
     bench_step.dependOn(&b.addRunArtifact(bench).step);
 
     // ── Example ──────────────────────────────────────────────────────────
 
-    const example = b.addExecutable(.{
-        .name = "iso8583-example",
+    const example_mod = b.createModule(.{
         .root_source_file = b.path("examples/basic.zig"),
         .target = target,
         .optimize = optimize,
     });
-    example.root_module.addImport("iso8583", lib.root_module);
+    const example = b.addExecutable(.{
+        .name = "iso8583-example",
+        .root_module = example_mod,
+    });
+    example.root_module.addImport("iso8583", iso_mod);
     const example_step = b.step("example", "Run basic example");
     example_step.dependOn(&b.addRunArtifact(example).step);
 }

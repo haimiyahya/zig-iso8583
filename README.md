@@ -66,7 +66,7 @@ const amount = msg.getFieldInt(4);  // pre-parsed integer
 | **Transport framing** | `framing` module: strip/attach 5-byte TPDU or 12-byte B24-style headers and 2-byte big-endian length prefixes — the codec itself always starts at the MTI |
 | **Pre-built specs** | ISO 8583:1987, 1993, and 2003 specifications included |
 | **Round-trip guaranteed** | `encode(decode(bytes))` produces byte-identical output |
-| **No hidden allocation** | Decode performs zero heap allocations; encode writes to any `std.io.Writer` |
+| **No hidden allocation** | Decode performs zero heap allocations; encode writes to any `*std.Io.Writer` |
 
 ## Performance
 
@@ -82,7 +82,7 @@ Performance targets from the design document are met or exceeded
 
 ## Requirements
 
-- Zig 0.14.0 or later
+- Zig 0.16.0 or later
 
 ## Installation
 
@@ -119,7 +119,7 @@ const std = @import("std");
 const iso8583 = @import("iso8583");
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -134,7 +134,7 @@ pub fn main() !void {
     try msg.decode(wire);
 
     // 3. Inspect
-    std.debug.print("MTI: {}\n", .{msg.mti});    // "0100"
+    std.debug.print("MTI: {f}\n", .{msg.mti});    // "0100"
     std.debug.print("Class: {}\n", .{msg.mti.class}); // .authorization
 
     if (msg.getField(2)) |pan|                   // zero-copy view
@@ -162,11 +162,11 @@ try iso8583.setField(&msg, 41, "TERM0001");           // Terminal ID (fixed_8)
 try iso8583.setField(&msg, 49, "840");                // Currency: USD (fixed_3)
 try iso8583.setField(&msg, 52, &pin_block);           // PIN block (binary, 8 bytes)
 
-// Serialize to any writer
-var buf = std.ArrayList(u8).init(allocator);
+// Serialize to any *std.Io.Writer (Allocating for heap output)
+var buf = std.Io.Writer.Allocating.init(allocator);
 defer buf.deinit();
-try iso8583.encode(&msg, buf.writer());
-// buf.items is the wire-format message
+try iso8583.encode(&msg, &buf.writer);
+// buf.written() is the wire-format message
 ```
 
 ### Round-Trip
@@ -175,11 +175,11 @@ try iso8583.encode(&msg, buf.writer());
 // Decode → Encode is byte-identical
 try msg.decode(wire_bytes);
 
-var out = std.ArrayList(u8).init(allocator);
+var out = std.Io.Writer.Allocating.init(allocator);
 defer out.deinit();
-try iso8583.encode(&msg, out.writer());
+try iso8583.encode(&msg, &out.writer);
 
-try std.testing.expectEqualSlices(u8, wire_bytes, out.items); // ✓
+try std.testing.expectEqualSlices(u8, wire_bytes, out.written()); // ✓
 ```
 
 ### Custom Specs
@@ -550,7 +550,7 @@ zig build test
 
 | Suite | Tests | Focus |
 |-------|------:|-------|
-| `src/iso8583.zig` | 65 | Module-level refAllDeclsRecursive |
+| `src/iso8583.zig` | 65 | Module-level re-export & sub-module test discovery |
 | `test_encoding.zig` | 38 | BCD codec, parsing, overflow, enums |
 | `test_mti.zig` | 33 | All classes/functions, BCD+ASCII, round-trips |
 | `test_bitmap.zig` | 45 | Every bit 0–127, boundaries, iterators |

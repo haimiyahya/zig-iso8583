@@ -179,12 +179,10 @@ pub const Mti = packed struct {
         return v * 1000 + c * 100 + f * 10 + o;
     }
 
-    /// Format the MTI as a 4-digit string for std.fmt.
-    pub fn format(self: Self, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
-        _ = fmt;
-        _ = options;
+    /// Format the MTI as a 4-digit string for std.fmt (`{f}`).
+    pub fn format(self: Self, w: *std.Io.Writer) std.Io.Writer.Error!void {
         const ascii = self.toAscii();
-        try writer.writeAll(&ascii);
+        try w.writeAll(&ascii);
     }
 };
 
@@ -231,7 +229,7 @@ test "Mti.value" {
 test "Mti.format" {
     const mti = try Mti.parse(&[_]u8{ '0', '4', '2', '0' });
     var buf: [4]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    try fbs.writer().print("{}", .{mti});
-    try std.testing.expectEqualSlices(u8, "0420", &buf);
+    var w = std.Io.Writer.fixed(&buf);
+    try w.print("{f}", .{mti});
+    try std.testing.expectEqualSlices(u8, "0420", w.buffered());
 }
