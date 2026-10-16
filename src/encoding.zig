@@ -64,10 +64,18 @@ pub const LengthType = enum(u8) {
     fixed_6 = 6,
     fixed_7 = 7,
     fixed_8 = 8,
+    /// 9-digit fixed numeric (MEPS-ISOB24 DE30 DC_TXN_PROC_FEE_AMT).
+    fixed_9 = 9,
     fixed_10 = 10,
     fixed_12 = 12,
     fixed_15 = 15,
     fixed_16 = 16,
+    /// 17-digit fixed numeric (MEPS-ISOB24 DE97 NET_SETTLE_AMT).
+    fixed_17 = 17,
+    /// 19-char fixed (MEPS-ISOB24 DE60 TERMINAL_DATA).
+    fixed_19 = 19,
+    /// 22-char fixed (MEPS-ISOB24 DE61 CARD_ISSUER_CAT_RESP_CODE).
+    fixed_22 = 22,
     fixed_20 = 20,
     fixed_24 = 24,
     fixed_28 = 28,
