@@ -967,3 +967,78 @@ test "lvar encode wire format" {
     try msg2.decode(wire);
     try std.testing.expectEqualStrings("123456789", msg2.getField(2).?);
 }
+
+// ─── bvar (binary length prefix) ──────────────────────────────────────────
+
+const BvarSpec = spec_mod.Spec.define(.{
+    .version = .v1987,
+    .fields = &.{
+        field_mod.field(2, .bvar1, .ascii_numeric, .{ .max_len = 19 }),
+        field_mod.field(55, .bvar2, .binary, .{ .max_len = 999 }),
+    },
+});
+
+test "bvar1: 1-byte binary length prefix wire format" {
+    const allocator = std.testing.allocator;
+
+    var msg = try Message.init(allocator, &BvarSpec);
+    defer msg.deinit();
+    setMti(&msg, 0, .financial, .request, .acquirer);
+    try setField(&msg, 2, "4111111234567890"); // 16 digits — the lvar case that must NOT be used here
+
+    var buf = std.Io.Writer.Allocating.init(allocator);
+    defer buf.deinit();
+    try encode(&msg, &buf.writer);
+
+    const wire = buf.written();
+    try std.testing.expectEqual(@as(u8, 16), wire[12]); // prefix byte = 0x10
+    try std.testing.expectEqualSlices(u8, "4111111234567890", wire[13..29]);
+
+    var msg2 = try Message.init(allocator, &BvarSpec);
+    defer msg2.deinit();
+    try msg2.decode(wire);
+    try std.testing.expectEqualStrings("4111111234567890", msg2.getField(2).?);
+}
+
+test "bvar2: 2-byte binary length prefix round trip" {
+    const allocator = std.testing.allocator;
+
+    var msg = try Message.init(allocator, &BvarSpec);
+    defer msg.deinit();
+    setMti(&msg, 0, .financial, .request, .acquirer);
+    const chip = "\xDE\xAD" ** 30; // 60 bytes
+    try setField(&msg, 55, chip);
+
+    var buf = std.Io.Writer.Allocating.init(allocator);
+    defer buf.deinit();
+    try encode(&msg, &buf.writer);
+
+    const wire = buf.written();
+    try std.testing.expectEqual(@as(u8, 0), wire[12]);
+    try std.testing.expectEqual(@as(u8, 60), wire[13]);
+
+    var msg2 = try Message.init(allocator, &BvarSpec);
+    defer msg2.deinit();
+    try msg2.decode(wire);
+    try std.testing.expectEqualSlices(u8, chip, msg2.getField(55).?);
+}
+
+test "bvar1 rejects data >= 256 bytes" {
+    const allocator = std.testing.allocator;
+    // max_len deliberately exceeds the 1-byte prefix capacity (255) so the
+    // ENCODER-side guard is what fires (setField only checks max_len).
+    const OverflowSpec = comptime spec_mod.Spec.define(.{
+        .version = .v1987,
+        .fields = &.{
+            field_mod.field(2, .bvar1, .ascii_numeric, .{ .max_len = 999 }),
+        },
+    });
+    var msg = try Message.init(allocator, &OverflowSpec);
+    defer msg.deinit();
+    setMti(&msg, 0, .financial, .request, .acquirer);
+    const big = "1" ** 300;
+    try setField(&msg, 2, big);
+    var buf = std.Io.Writer.Allocating.init(allocator);
+    defer buf.deinit();
+    try std.testing.expectError(error.FieldTooLong, encode(&msg, &buf.writer));
+}

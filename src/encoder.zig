@@ -143,6 +143,13 @@ fn encodeFields(msg: *const Message, w: *std.Io.Writer) !void {
 fn encodeField(w: *std.Io.Writer, data: []const u8, desc: spec_mod.FieldDescriptor) !void {
     // Write length prefix for variable-length fields
     switch (desc.length_type) {
+        .bvar1, .bvar2, .bvar3 => {
+            const n = desc.length_type.prefixBytes().?;
+            if (data.len >= (@as(usize, 1) << @intCast(8 * n))) return error.FieldTooLong;
+            var len_bytes: [4]u8 = undefined;
+            std.mem.writeInt(u32, &len_bytes, @intCast(data.len), .big);
+            try w.writeAll(len_bytes[4 - n ..]);
+        },
         .lvar, .llvar, .lllvar => {
             const prefix_digits = desc.length_type.prefixDigits().?;
             // data length must be representable in the ASCII prefix digits

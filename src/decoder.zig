@@ -270,6 +270,18 @@ pub const Message = struct {
         var data_offset: usize = offset;
 
         switch (desc.length_type) {
+            .bvar1, .bvar2, .bvar3 => {
+                const n = desc.length_type.prefixBytes().?;
+                if (buf.len < offset + n) return error.BufferTooShort;
+                var len_bytes: [4]u8 = .{ 0, 0, 0, 0 };
+                @memcpy(len_bytes[4 - n ..], buf[offset..][0..n]);
+                field_len = std.mem.readInt(u32, &len_bytes, .big);
+                data_offset = offset + n;
+
+                // Validate length
+                if (desc.max_len > 0 and field_len > desc.max_len)
+                    return error.FieldTooLong;
+            },
             .lvar, .llvar, .lllvar, .llllvar => {
                 const prefix_digits = desc.length_type.prefixDigits().?;
                 if (buf.len < offset + prefix_digits) return error.BufferTooShort;
