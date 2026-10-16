@@ -16,6 +16,8 @@ const Spec = spec_mod.Spec;
 const encode = encoder_mod.encode;
 const setMti = encoder_mod.setMti;
 const setField = encoder_mod.setField;
+const setFieldPadded = encoder_mod.setFieldPadded;
+const setFieldInt = encoder_mod.setFieldInt;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Test specs
@@ -795,4 +797,140 @@ test "decode multiple messages sequentially with reset" {
     try std.testing.expectEqual(mti_mod.MsgClass.financial, msg.mti.class);
     try std.testing.expect(!msg.isPresent(2)); // Should be cleared
     try std.testing.expect(msg.isPresent(3));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Unknown-field policy (strict decode)
+// ═══════════════════════════════════════════════════════════════════════════
+
+const SkipSpec = Spec.define(.{
+    .version = .v1987,
+    .unknown_fields = .skip, // legacy lenient behavior
+    .fields = &.{
+        field_mod.field(4, .fixed_12, .ascii_numeric, .{}),
+    },
+});
+
+const RejectSpec = Spec.define(.{
+    .version = .v1987,
+    // .unknown_fields defaults to .reject
+    .fields = &.{
+        field_mod.field(4, .fixed_12, .ascii_numeric, .{}),
+    },
+});
+
+/// Frame with DE4 (in spec) AND DE5 (NOT in spec) set in the bitmap.
+fn frameWithUnknownField() [4 + 8 + 12]u8 {
+    var frame: [24]u8 = undefined;
+    @memcpy(frame[0..4], "0200");
+    @memset(frame[4..12], 0);
+    frame[4] = 0x18; // bits 4 and 5
+    @memcpy(frame[12..24], "000000001000");
+    return frame;
+}
+
+test "unknown bitmap field: reject is the default and reports the ID" {
+    var msg = try Message.init(std.testing.allocator, &RejectSpec);
+    defer msg.deinit();
+
+    const frame = frameWithUnknownField();
+    try std.testing.expectError(error.FieldNotInSpec, msg.decode(&frame));
+    try std.testing.expectEqual(@as(?u8, 5), msg.last_unknown_field);
+}
+
+test "unknown bitmap field: skip policy preserves legacy behavior" {
+    var msg = try Message.init(std.testing.allocator, &SkipSpec);
+    defer msg.deinit();
+
+    const frame = frameWithUnknownField();
+    try msg.decode(&frame);
+    try std.testing.expectEqual(@as(?u8, 5), msg.last_unknown_field); // still recorded
+    try std.testing.expectEqualStrings("000000001000", msg.getField(4).?);
+    try std.testing.expect(msg.getField(5) == null);
+}
+
+test "clean frame decodes under reject policy" {
+    var msg = try Message.init(std.testing.allocator, &RejectSpec);
+    defer msg.deinit();
+
+    var frame: [24]u8 = undefined;
+    @memcpy(frame[0..4], "0200");
+    @memset(frame[4..12], 0);
+    frame[4] = 0x10; // bit 4 only
+    @memcpy(frame[12..24], "000000001000");
+
+    try msg.decode(&frame);
+    try std.testing.expect(msg.last_unknown_field == null);
+    try std.testing.expectEqualStrings("000000001000", msg.getField(4).?);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// setFieldPadded / setFieldInt (response-builder helpers)
+// ═══════════════════════════════════════════════════════════════════════════
+
+test "setFieldPadded numeric: right-aligned, zero-padded" {
+    var msg = try Message.init(std.testing.allocator, &BasicSpec);
+    defer msg.deinit();
+
+    try setFieldPadded(&msg, 4, "1000"); // DE4 fixed_12
+    try std.testing.expectEqualStrings("000000001000", msg.getField(4).?);
+    try std.testing.expectEqual(@as(?u64, 1000), msg.getFieldInt(4)); // pre-parsed
+}
+
+test "setFieldPadded alpha: left-aligned, space-padded" {
+    var msg = try Message.init(std.testing.allocator, &BasicSpec);
+    defer msg.deinit();
+
+    try setFieldPadded(&msg, 41, "T1"); // DE41 fixed_8
+    try std.testing.expectEqualStrings("T1      ", msg.getField(41).?);
+}
+
+test "setFieldPadded errors" {
+    var msg = try Message.init(std.testing.allocator, &BasicSpec);
+    defer msg.deinit();
+
+    try std.testing.expectError(error.InvalidFieldLength, setFieldPadded(&msg, 4, "1234567890123")); // 13 > 12
+    try std.testing.expectError(error.NotFixedLength, setFieldPadded(&msg, 2, "4111")); // DE2 is llvar
+    try std.testing.expectError(error.FieldNotInSpec, setFieldPadded(&msg, 5, "000000001000")); // not in spec
+}
+
+test "setFieldInt: zero-padded numeric" {
+    var msg = try Message.init(std.testing.allocator, &BasicSpec);
+    defer msg.deinit();
+
+    try setFieldInt(&msg, 4, 1000);
+    try std.testing.expectEqualStrings("000000001000", msg.getField(4).?);
+    try setFieldInt(&msg, 11, 42);
+    try std.testing.expectEqualStrings("000042", msg.getField(11).?);
+}
+
+test "setFieldInt errors" {
+    var msg = try Message.init(std.testing.allocator, &BasicSpec);
+    defer msg.deinit();
+
+    try std.testing.expectError(error.NotNumericField, setFieldInt(&msg, 41, 5)); // DE41 is alpha
+    try std.testing.expectError(error.Overflow, setFieldInt(&msg, 4, 1000000000000)); // 13 digits > 12
+    try std.testing.expectError(error.NotFixedLength, setFieldInt(&msg, 2, 411)); // DE2 is llvar
+}
+
+test "padded message round-trips through encode/decode" {
+    var msg = try Message.init(std.testing.allocator, &BasicSpec);
+    defer msg.deinit();
+
+    setMti(&msg, 0, .financial, .advice_response, .issuer);
+    try setFieldPadded(&msg, 4, "150000");
+    try setFieldInt(&msg, 11, 7);
+    try setFieldPadded(&msg, 41, "TERM002");
+
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    try encode(&msg, buf.writer());
+
+    var got = try Message.init(std.testing.allocator, &BasicSpec);
+    defer got.deinit();
+    try got.decode(buf.items);
+
+    try std.testing.expectEqualStrings("000000150000", got.getField(4).?);
+    try std.testing.expectEqualStrings("000007", got.getField(11).?);
+    try std.testing.expectEqualStrings("TERM002 ", got.getField(41).?);
 }

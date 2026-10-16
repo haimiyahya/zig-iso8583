@@ -60,6 +60,10 @@ const amount = msg.getFieldInt(4);  // pre-parsed integer
 | **SIMD-accelerated** | Bitmap scanning, ASCII digit/alnum validation, BCD↔ASCII conversion, and memchr use `@Vector` intrinsics (SSE/AVX on x86-64, NEON on ARM) |
 | **Arena allocation** | Each message owns an `ArenaAllocator`; one `deinit()` frees everything, `reset()` reuses capacity for server loops |
 | **Comptime spec DSL** | Message specs are compile-time constants; field dispatch is monomorphized with direct-index lookup — no hash maps anywhere |
+| **Strict spec validation** | Duplicate field IDs, out-of-range IDs, and variable-length fields without `max_len` are **compile errors** (`Spec.define`) |
+| **Unknown-field policy** | Fields set in the bitmap but missing from the spec are rejected by default (`error.FieldNotInSpec` + `msg.last_unknown_field`); opt into legacy skip behavior with `.unknown_fields = .skip` |
+| **Field names** | Optional human-readable `.name` per field (all of `SpecV1987` is named) for logs and diagnostics — `spec.nameOf(id)`, `spec.writeFieldName(id, writer)` |
+| **Transport framing** | `framing` module: strip/attach 5-byte TPDU or 12-byte B24-style headers and 2-byte big-endian length prefixes — the codec itself always starts at the MTI |
 | **Pre-built specs** | ISO 8583:1987, 1993, and 2003 specifications included |
 | **Round-trip guaranteed** | `encode(decode(bytes))` produces byte-identical output |
 | **No hidden allocation** | Decode performs zero heap allocations; encode writes to any `std.io.Writer` |
@@ -245,7 +249,9 @@ while (true) {
 | `fieldCount(self) usize` | Number of present fields |
 | `fieldIterator(self) FieldStore.Iterator` | Iterate present field IDs ascending |
 
-Public data fields: `mti: Mti`, `bitmap: Bitmap`, `spec: *const Spec`.
+Public data fields: `mti: Mti`, `bitmap: Bitmap`, `spec: *const Spec`,
+`last_unknown_field: ?u8` (set when decode hit a bitmap field missing from
+the spec — see `UnknownFieldPolicy`).
 
 **Lifetime contract:** field slices reference the buffer passed to `decode()`.
 Keep that buffer alive and unmodified while the message is in use.
@@ -254,12 +260,15 @@ Keep that buffer alive and unmodified while the message is in use.
 
 | Signature | Description |
 |-----------|-------------|
-| `Spec.define(comptime config: SpecConfig) Spec` | Build a spec at comptime |
+| `Spec.define(comptime config: SpecConfig) Spec` | Build a spec at comptime (validates the field set — see below) |
 | `spec.lookup(field_id: usize) ?FieldDescriptor` | O(1) descriptor lookup |
 | `spec.hasField(field_id: usize) bool` | Field defined in spec? |
 | `spec.fieldCount() usize` | Number of fields in spec |
 | `spec.mtiLen() usize` | MTI wire length (4 ASCII / 2 BCD) |
 | `spec.bitmapLen() usize` | Min bitmap length (8 binary / 16 BCD) |
+| `spec.nameOf(field_id: usize) ?[]const u8` | Field's `.name`, or null (fallback label: `"DE<id>"`) |
+| `spec.writeFieldName(field_id, writer) !void` | Write name or `"DE<id>"` — for unambiguous logs |
+| `spec.unknown_fields` | `UnknownFieldPolicy` — `.reject` (default) or `.skip` |
 
 `SpecConfig` fields:
 
@@ -269,8 +278,52 @@ Keep that buffer alive and unmodified while the message is in use.
 | `mti_encoding` | `MtiEncoding` | `.ascii` | `.ascii` or `.bcd` |
 | `bitmap_encoding` | `BitmapEncoding` | `.binary` | `.binary` or `.bcd` |
 | `fields` | `[]const FieldDescriptor` | required | Field definitions |
+| `unknown_fields` | `UnknownFieldPolicy` | `.reject` | Behavior for bitmap fields not in the spec |
 
-Pre-built specs: `SpecV1987` (50+ fields), `SpecV1993`, `SpecV2003`.
+**Comptime validation.** `Spec.define` is a compile error if the field set
+contains an out-of-range ID (not 2–128), a duplicate ID, or a variable-length
+field without `max_len`. Misconfigured dialects fail the build, not production.
+Detection logic is also callable at runtime via `firstInvalidField(fields)`
+(returning a `FieldProblem`); `validateFields(fields)` is the `@compileError`
+wrapper.
+
+Pre-built specs: `SpecV1987` (50+ fields, **all named** — e.g. DE4 is
+`"Amount, transaction"`, DE70 is `"Network management information code"`),
+`SpecV1993`, `SpecV2003`.
+
+### Response Builders: setFieldPadded / setFieldInt
+
+`setField` requires exactly `fixedLen` bytes. For hand-built responses,
+the padded helpers format ISO conventions for you (buffer allocated from
+the message's arena):
+
+```zig
+try iso8583.setFieldPadded(&msg, 4, "1000");   // DE4 fixed_12  → "000000001000" (numeric: right-aligned, '0')
+try iso8583.setFieldPadded(&msg, 41, "T1");    // DE41 fixed_8  → "T1      "      (other: left-aligned, ' ')
+try iso8583.setFieldInt(&msg, 11, 42);         // DE11 fixed_6  → "000042"
+```
+
+Errors: `FieldNotInSpec`, `NotFixedLength` (variable-length field),
+`InvalidFieldLength` (value longer than fixed length), `NotNumericField`
+(`setFieldInt` on a non-numeric field), `Overflow` (value does not fit).
+
+### Transport Framing
+
+Everything that surrounds an ISO 8583 message on the wire but is not part
+of it lives in `iso8583.framing` — `decode()` still starts at the MTI:
+
+```zig
+// Inbound: 2-byte length prefix + transport header + message
+const payload = try iso8583.stripTransportHeader(frame_body, 5); // 5B TPDU (or 12B B24 ext header)
+try msg.decode(payload);
+
+// Outbound
+const lp = try iso8583.LengthPrefix.encode(header.len + encoded.len);
+try writer.writeAll(&lp);
+try iso8583.attachTransportHeader(writer, &header, encoded);
+```
+
+Errors: `FramingError{ BufferTooShort, LengthOverflow }`.
 
 ### Field Encodings
 
@@ -361,14 +414,18 @@ Common MTIs: `0100`/`0110` auth request/response, `0200`/`0210` financial,
 ### Error Sets
 
 **DecodeError:** `InvalidMti`, `InvalidBitmap`, `InvalidFieldEncoding`,
-`InvalidFieldLength`, `FieldTooLong`, `FieldNotInSpec`, `InvalidBcdDigit`,
+`InvalidFieldLength`, `FieldTooLong`, `FieldNotInSpec` (only when
+`unknown_fields == .reject` — the default), `InvalidBcdDigit`,
 `BufferTooShort`, `UnexpectedEndOfMessage`, `OutOfMemory`
 
 **EncodeError:** `FieldNotInSpec`, `FieldTooLong`, `FieldNotSet`,
-`InvalidBcdDigit`, `BufferTooShort`, `OutOfMemory`
+`InvalidBcdDigit`, `BufferTooShort`, `OutOfMemory`; builders additionally
+surface `NotFixedLength`, `NotNumericField`, `Overflow`
 
 **ValidationError:** `InvalidDigits`, `InvalidAlnum`, `InvalidBinary`,
 `InvalidLength`, `EmptyField`
+
+**FramingError:** `BufferTooShort`, `LengthOverflow`
 
 ---
 

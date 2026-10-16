@@ -177,6 +177,75 @@ pub fn setMti(msg: *Message, version: u4, class: mti_mod.MsgClass, function: mti
     };
 }
 
+/// Set a fixed-length field with automatic padding, allocated from the
+/// message's arena (freed with the message).
+///
+/// - `ascii_numeric`: **right-aligned**, '0'-padded — `setFieldPadded(&msg, 4, "1000")`
+///   stores `"000000001000"` for a fixed_12 DE4 (ISO numeric convention).
+/// - other encodings: **left-aligned**, ' '-padded — `setFieldPadded(&msg, 41, "T1")`
+///   stores `"T1      "` for a fixed_8 DE41 (ISO alphanumeric convention).
+///
+/// This is the ergonomic counterpart to `setField`, which requires callers
+/// to supply exactly `fixedLen` bytes — convenient for hand-built responses,
+/// explicit enough that no padding happens silently.
+///
+/// ## Errors
+/// - `error.FieldNotInSpec` — field_id not defined in the spec
+/// - `error.NotFixedLength` — field is variable-length (use `setField`)
+/// - `error.InvalidFieldLength` — value longer than the field's fixed length
+/// - `error.OutOfMemory` — arena allocation failed
+pub fn setFieldPadded(msg: *Message, field_id: usize, value: []const u8) !void {
+    const desc = msg.spec.lookupRuntime(field_id) orelse return error.FieldNotInSpec;
+    const digits = desc.length_type.fixedLen() orelse return error.NotFixedLength;
+    // BCD fields carry ceil(digits/2) wire bytes; padding applies to digits.
+    const wire_len = switch (desc.encoding) {
+        .bcd => (digits + 1) / 2,
+        else => digits,
+    };
+    if (value.len > wire_len) return error.InvalidFieldLength;
+
+    const buf = try msg.arena.allocator().alloc(u8, wire_len);
+    switch (desc.encoding) {
+        .ascii_numeric => {
+            @memset(buf, '0');
+            @memcpy(buf[wire_len - value.len ..], value);
+        },
+        else => {
+            @memset(buf, ' ');
+            @memcpy(buf[0..value.len], value);
+        },
+    }
+    try setField(msg, field_id, buf);
+}
+
+/// Set a fixed-length `ascii_numeric` field from an integer, zero-padded to
+/// the field's length (allocated from the message's arena).
+///
+/// ```zig
+/// try setFieldInt(&msg, 4, 1000); // DE4 fixed_12 → "000000001000"
+/// ```
+///
+/// ## Errors
+/// - `error.FieldNotInSpec` — field_id not defined in the spec
+/// - `error.NotFixedLength` — field is variable-length
+/// - `error.NotNumericField` — field is not `ascii_numeric` on the wire
+/// - `error.Overflow` — value does not fit in the field's length
+/// - `error.OutOfMemory` — arena allocation failed
+pub fn setFieldInt(msg: *Message, field_id: usize, value: u64) !void {
+    const desc = msg.spec.lookupRuntime(field_id) orelse return error.FieldNotInSpec;
+    const digits = desc.length_type.fixedLen() orelse return error.NotFixedLength;
+    if (desc.encoding != .ascii_numeric) return error.NotNumericField;
+
+    // cheap width check before allocating
+    var tmp: [20]u8 = undefined;
+    const written = std.fmt.formatIntBuf(&tmp, value, 10, .lower, .{});
+    if (written > digits) return error.Overflow;
+
+    const buf = try msg.arena.allocator().alloc(u8, digits);
+    encoding.writeAsciiUint(value, buf); // right-aligned, zero-padded
+    try setField(msg, field_id, buf);
+}
+
 /// Set a field's data on the message, validating against the spec.
 ///
 /// - Variable-length fields: `data.len` must be <= spec max_len.

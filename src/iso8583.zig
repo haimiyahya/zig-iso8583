@@ -15,7 +15,8 @@
 //! | `Version` | `spec` | ISO 8583 version (v1987, v1993, v2003) |
 //! | `MtiEncoding` | `spec` | MTI wire encoding (ASCII or BCD) |
 //! | `BitmapEncoding` | `spec` | Bitmap wire encoding (binary or BCD) |
-//! | `FieldDescriptor` | `spec` | Field format descriptor |
+//! | `FieldDescriptor` | `spec` | Field format descriptor (optional `.name`) |
+//! | `UnknownFieldPolicy` | `spec` | Policy for bitmap fields missing from the spec |
 //! | `FieldEncoding` | `encoding` | How field data is encoded on the wire |
 //! | `LengthType` | `encoding` | Fixed or variable-length field type |
 //! | `Mti` | `mti` | Parsed Message Type Identifier |
@@ -28,6 +29,8 @@
 //! | `Message` | `decoder` | Decoded ISO 8583 message |
 //! | `DecodeError` | `decoder` | Error set for decode operations |
 //! | `EncodeError` | `encoder` | Error set for encode operations |
+//! | `FramingError` | `framing` | Error set for transport framing helpers |
+//! | `LengthPrefix` | `framing` | 2-byte big-endian frame length prefix |
 //! | `FieldView2` | `zero_copy` | Alternative field view with asInt()/asBytes() |
 //! | `MessageBuffer` | `zero_copy` | Stable backing store for zero-copy views |
 //!
@@ -38,6 +41,10 @@
 //! | `encode(&msg, writer)` | Serialize a message to any `std.io.Writer` |
 //! | `setMti(&msg, ver, class, func, origin)` | Set MTI fields on a message |
 //! | `setField(&msg, id, data)` | Set a field's data with validation |
+//! | `setFieldPadded(&msg, id, data)` | Set a fixed-length field with ISO padding (numeric '0' right-aligned / alpha ' ' left-aligned) |
+//! | `setFieldInt(&msg, id, value)` | Set a fixed-length numeric field from a u64, zero-padded |
+//! | `stripTransportHeader(frame, len)` | Strip a 5B TPDU / 12B B24-style header (zero-copy) |
+//! | `attachTransportHeader(writer, hdr, msg)` | Write header + encoded message |
 //!
 //! ## Pre-built Specifications
 //!
@@ -61,6 +68,7 @@
 //! - `iso8583.encoder` — Encode pipeline
 //! - `iso8583.validate` — SIMD field validation, required field rules
 //! - `iso8583.zero_copy` — Typed field views, message buffer
+//! - `iso8583.framing` — Transport headers, 2-byte length prefixes
 
 const std = @import("std");
 
@@ -74,6 +82,7 @@ pub const decoder = @import("decoder.zig");
 pub const encoder = @import("encoder.zig");
 pub const validate = @import("validate.zig");
 pub const zero_copy = @import("zero_copy.zig");
+pub const framing = @import("framing.zig");
 
 // ─── Top-level Re-exports ──────────────────────────────────────────────────
 
@@ -83,6 +92,7 @@ pub const Version = spec.Version;
 pub const MtiEncoding = spec.MtiEncoding;
 pub const BitmapEncoding = spec.BitmapEncoding;
 pub const FieldDescriptor = spec.FieldDescriptor;
+pub const UnknownFieldPolicy = spec.UnknownFieldPolicy;
 
 // Encoding types
 pub const FieldEncoding = encoding.FieldEncoding;
@@ -110,6 +120,14 @@ pub const EncodeError = encoder.EncodeError;
 pub const encode = encoder.encode;
 pub const setMti = encoder.setMti;
 pub const setField = encoder.setField;
+pub const setFieldPadded = encoder.setFieldPadded;
+pub const setFieldInt = encoder.setFieldInt;
+
+// Framing types
+pub const FramingError = framing.FramingError;
+pub const LengthPrefix = framing.LengthPrefix;
+pub const stripTransportHeader = framing.stripTransportHeader;
+pub const attachTransportHeader = framing.attachTransportHeader;
 
 // Zero-copy types
 pub const FieldView2 = zero_copy.FieldView;

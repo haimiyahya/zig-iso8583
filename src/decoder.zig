@@ -73,7 +73,9 @@ pub const DecodeError = error{
     InvalidFieldLength,
     /// Variable-length field exceeds its spec max_len.
     FieldTooLong,
-    /// Present in bitmap but not defined in the spec (skipped, reserved).
+    /// Present in bitmap but not defined in the spec. Only returned when
+    /// `Spec.unknown_fields == .reject` (the default); `.skip` ignores the
+    /// field instead. See `Message.last_unknown_field` for the offending ID.
     FieldNotInSpec,
     /// BCD data contains an invalid nibble (> 9).
     InvalidBcdDigit,
@@ -112,6 +114,10 @@ pub const Message = struct {
     field_store: FieldStore,
     /// The comptime spec this message conforms to.
     spec: *const Spec,
+    /// Set when `decode()` encountered a field present in the bitmap but
+    /// missing from the spec (before honoring `spec.unknown_fields`).
+    /// Enables precise diagnostics: `DE{last_unknown_field} not in spec`.
+    last_unknown_field: ?u8 = null,
 
     const Self = @This();
 
@@ -144,6 +150,7 @@ pub const Message = struct {
     pub fn reset(self: *Self) void {
         self.field_store = FieldStore.init();
         self.bitmap = Bitmap.init();
+        self.last_unknown_field = null;
         _ = self.arena.reset(.retain_capacity);
     }
 
@@ -231,7 +238,17 @@ pub const Message = struct {
         var bitmap_iter = self.bitmap.iterator();
 
         while (bitmap_iter.next()) |field_id| {
-            const desc = self.spec.lookupRuntime(field_id) orelse continue;
+            const desc = self.spec.lookupRuntime(field_id) orelse {
+                self.last_unknown_field = @intCast(field_id);
+                switch (self.spec.unknown_fields) {
+                    // Legacy lenient behavior: pretend the field isn't there.
+                    .skip => continue,
+                    // Strict (default): a bitmap field outside the spec means
+                    // a misrouted terminal or dialect drift — never decode
+                    // "successfully" with fields silently missing.
+                    .reject => return error.FieldNotInSpec,
+                }
+            };
             const result = try self.decodeField(buf, offset, field_id, desc);
             offset = result;
         }

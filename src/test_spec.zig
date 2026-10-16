@@ -246,3 +246,96 @@ test "Version enum values" {
     try std.testing.expectEqual(spec_mod.Version.v1993, spec_mod.Version.v1993);
     try std.testing.expectEqual(spec_mod.Version.v2003, spec_mod.Version.v2003);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Comptime field-set validation
+// ═══════════════════════════════════════════════════════════════════════════
+
+test "field-set validation: valid set passes" {
+    const fields = [_]field_mod.FieldDescriptor{
+        field_mod.field(2, .llvar, .ascii_numeric, .{ .max_len = 19, .name = "PAN" }),
+        field_mod.field(3, .fixed_6, .ascii_numeric, .{}),
+    };
+    try std.testing.expect(spec_mod.firstInvalidField(&fields) == null);
+}
+
+test "field-set validation: out-of-range ID detected" {
+    const fields = [_]field_mod.FieldDescriptor{
+        field_mod.field(2, .llvar, .ascii_numeric, .{ .max_len = 19 }),
+        field_mod.field(200, .fixed_6, .ascii_numeric, .{}), // invalid
+    };
+    const problem = spec_mod.firstInvalidField(&fields).?;
+    try std.testing.expectEqual(spec_mod.FieldProblem.Kind.id_out_of_range, problem.kind);
+    try std.testing.expectEqual(@as(u8, 200), problem.id);
+}
+
+test "field-set validation: duplicate ID detected" {
+    const fields = [_]field_mod.FieldDescriptor{
+        field_mod.field(4, .fixed_12, .ascii_numeric, .{}),
+        field_mod.field(4, .fixed_12, .ascii_numeric, .{}), // duplicate
+    };
+    const problem = spec_mod.firstInvalidField(&fields).?;
+    try std.testing.expectEqual(spec_mod.FieldProblem.Kind.duplicate, problem.kind);
+    try std.testing.expectEqual(@as(u8, 4), problem.id);
+}
+
+test "field-set validation: variable field without max_len detected" {
+    const fields = [_]field_mod.FieldDescriptor{
+        field_mod.field(48, .lllvar, .ascii_alpha, .{}), // missing max_len
+    };
+    const problem = spec_mod.firstInvalidField(&fields).?;
+    try std.testing.expectEqual(spec_mod.FieldProblem.Kind.missing_max_len, problem.kind);
+    try std.testing.expectEqual(@as(u8, 48), problem.id);
+}
+
+// Spec.define itself rejects these at compile time; the compile-failure path
+// is exercised by CI building the pre-built specs (any regression there is a
+// build break, not a runtime fault).
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Field names (debugging)
+// ═══════════════════════════════════════════════════════════════════════════
+
+test "SpecV1987 field names" {
+    try std.testing.expectEqualStrings("Primary account number", spec_mod.SpecV1987.nameOf(2).?);
+    try std.testing.expectEqualStrings("Amount, transaction", spec_mod.SpecV1987.nameOf(4).?);
+    try std.testing.expectEqualStrings("Network management information code", spec_mod.SpecV1987.nameOf(70).?);
+    try std.testing.expect(spec_mod.SpecV1987.nameOf(21) == null); // not in spec
+}
+
+test "writeFieldName: named and fallback" {
+    const Named = comptime spec_mod.Spec.define(.{
+        .version = .v1987,
+        .fields = &.{
+            field_mod.field(4, .fixed_12, .ascii_numeric, .{ .name = "Amount, transaction" }),
+        },
+    });
+    const Unnamed = comptime spec_mod.Spec.define(.{
+        .version = .v1987,
+        .fields = &.{
+            field_mod.field(4, .fixed_12, .ascii_numeric, .{}),
+        },
+    });
+
+    var buf: [64]u8 = undefined;
+
+    var fbs1 = std.io.fixedBufferStream(&buf);
+    try Named.writeFieldName(4, fbs1.writer());
+    try std.testing.expectEqualStrings("Amount, transaction", fbs1.getWritten());
+
+    var fbs2 = std.io.fixedBufferStream(&buf);
+    try Unnamed.writeFieldName(4, fbs2.writer());
+    try std.testing.expectEqualStrings("DE4", fbs2.getWritten());
+
+    var fbs3 = std.io.fixedBufferStream(&buf);
+    try spec_mod.SpecV1987.writeFieldName(127, fbs3.writer()); // not in spec
+    try std.testing.expectEqualStrings("DE127", fbs3.getWritten());
+}
+
+test "Spec unknown_fields default is reject" {
+    const s = spec_mod.Spec.define(.{
+        .version = .v1987,
+        .fields = &.{field_mod.field(2, .llvar, .ascii_numeric, .{ .max_len = 19 })},
+    });
+    try std.testing.expectEqual(spec_mod.UnknownFieldPolicy.reject, s.unknown_fields);
+}

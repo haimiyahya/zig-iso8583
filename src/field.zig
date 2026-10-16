@@ -44,13 +44,17 @@ pub const FieldDescriptor = struct {
     max_len: usize = 0,
     /// True if this field contains nested sub-fields (e.g., DE48, DE62).
     has_subfields: bool = false,
+    /// Optional human-readable name for logs and diagnostics
+    /// (e.g., "PAN", "Amount, transaction"). Null on unnamed fields;
+    /// `Spec.nameOf` falls back to "DE<id>".
+    name: ?[]const u8 = null,
 };
 
 /// Create a field descriptor with concise syntax.
 ///
 /// ```zig
-/// field(2, .llvar, .ascii_numeric, .{ .max_len = 19 })   // PAN
-/// field(3, .fixed_6, .ascii_numeric, .{})                // processing code
+/// field(2, .llvar, .ascii_numeric, .{ .max_len = 19, .name = "PAN" })  // PAN
+/// field(3, .fixed_6, .ascii_numeric, .{})                              // processing code
 /// field(48, .lllvar, .ascii_alpha, .{ .max_len = 999, .has_subfields = true })
 /// ```
 ///
@@ -60,7 +64,7 @@ pub fn field(
     comptime id: comptime_int,
     comptime lt: LengthType,
     comptime enc: FieldEncoding,
-    comptime opts: struct { max_len: usize = 0, has_subfields: bool = false },
+    comptime opts: struct { max_len: usize = 0, has_subfields: bool = false, name: ?[]const u8 = null },
 ) FieldDescriptor {
     const max = if (lt.fixedLen()) |fl| fl else opts.max_len;
     return .{
@@ -69,6 +73,7 @@ pub fn field(
         .encoding = enc,
         .max_len = max,
         .has_subfields = opts.has_subfields,
+        .name = opts.name,
     };
 }
 
